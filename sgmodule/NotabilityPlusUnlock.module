@@ -1,0 +1,18 @@
+#!url=https://your_own_url_here/notability.module
+#!name=Notability Plus
+
+#!desc=Notability解锁
+
+#!author=anpple
+
+
+
+[MITM]
+
+hostname = %APPEND% notability.com
+
+
+
+[Script]
+
+Notability Plus=type=http-response,pattern=^https://notability.com/(global|subscriptions),requires-body=1,script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/notability.js
