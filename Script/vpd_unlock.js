@@ -1,7 +1,7 @@
 /*
  * @name Huawei VPD Distance Unlock
  * @description 修改华为泊车服务返回的距离限制，实测数值3000单位为米（车机端可能按厘米解析或有除100逻辑）
- * @author YourName
+ * @author Anpple
  * @license MIT
  */
 
