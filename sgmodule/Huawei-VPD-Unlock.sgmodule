@@ -10,7 +10,7 @@ hostname = mobile.avp.adscloud.huawei.com
 [Script]
 # 拦截泊车合规性检查接口
 # requires-body=1 是必须的，因为我们需要修改响应体
-http-response ^https:\/\/mobile\.avp\.adscloud\.huawei\.com\/mobile\/foundation-service\/v1\/vpd-compliance\/check requires-body=1,max-size=131072 script-path=https://raw.githubusercontent.com/yourusername/HuaweiAVP/main/vpd_unlock.js
+http-response ^https:\/\/mobile\.avp\.adscloud\.huawei\.com\/mobile\/foundation-service\/v1\/vpd-compliance\/check requires-body=1,max-size=131072 script-path=https://raw.githubusercontent.com/anpplex/Surge/refs/heads/main/Script/vpd_unlock.js
 
 [MITM Rewrite]
 # 作为备选方案，如果脚本失效，可以尝试使用重写
