@@ -1,0 +1,17 @@
+#!name=华为泊车距离解锁 (VPD Distance Unlock)
+#!desc=修改泊车合规检查返回值，解除泊车距离限制
+#!author=Anpple
+#!version=1.0
+#!min-surgen-version=4.0
+
+[MITM]
+hostname = mobile.avp.adscloud.huawei.com
+
+[Script]
+# 拦截泊车合规性检查接口
+# requires-body=1 是必须的，因为我们需要修改响应体
+http-response ^https:\/\/mobile\.avp\.adscloud\.huawei\.com\/mobile\/foundation-service\/v1\/vpd-compliance\/check requires-body=1,max-size=131072 script-path=https://raw.githubusercontent.com/yourusername/HuaweiAVP/main/vpd_unlock.js
+
+[MITM Rewrite]
+# 作为备选方案，如果脚本失效，可以尝试使用重写
+# ^https:\/\/mobile\.avp\.adscloud\.huawei\.com\/mobile\/foundation-service\/v1\/vpd-compliance\/check url 307 https://surge-module-proxy.example.com/vpd-compliance/check
