@@ -1,4 +1,4 @@
-#!name=华为广告合规检查绕过
+#!name=VPD-unlock
 #!desc=绕过华为设备的定位距离和路径限制检查
 #!homepage=https://github.com/anpplex/Surge
 #!author=anpplex
@@ -8,5 +8,9 @@
 [MITM]
 hostname = mobile.avp.adscloud.huawei.com
 
-[Script]
-http-response ^https:\/\/mobile\.avp\.adscloud\.huawei\.com\/mobile\/foundation-service\/v1\/vpd-compliance\/check requires-body=1,max-size=131072 script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/vpd_unlock.js
+[Rewrite Local]
+# POST 方法，直接替换响应
+^https:\/\/mobile\.avp\.adscloud\.huawei\.com\/mobile\/foundation-service\/v1\/vpd-compliance\/check$ url script-response-body https://raw.githubusercontent.com/anpplex/Surge/main/fixed_vpd_response.json
+
+[Script Local]
+# 如果需要更多动态替换逻辑，仍支持脚本扩展
