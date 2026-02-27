@@ -1,0 +1,12 @@
+{
+    "errorCode": "mobile.service.foundation.010000",
+    "errorMessage": "processed successfully.",
+    "data": {
+        "maxMobileDistanceLimit": 3000,
+        "maxPathLimit": 3000,
+        "maxMobileDistanceLimitGround": 3000,
+        "maxPathLimitGround": 3000,
+        "accuracyLimit": 3100,
+        "accuracyLimitGround": 2000
+    }
+}
