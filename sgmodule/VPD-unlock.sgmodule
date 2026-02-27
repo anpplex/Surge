@@ -1,0 +1,12 @@
+#!name=VPD-unlock
+#!desc=绕过华为设备的定位距离和路径限制检查
+#!homepage=https://github.com/anpplex/Surge
+#!author=anpplex
+#!icon=https://raw.githubusercontent.com/anpplex/Surge/main/icon.png
+#!date=2026-02-27
+
+[MITM]
+hostname = mobile.avp.adscloud.huawei.com
+
+[Script]
+vpd-bypass-distance = type=http-response,pattern=^https://mobile\.avp\.adscloud\.huawei\.com/mobile/foundation-service/v1/vpd-compliance/check,requires-body=true,max-size=0,script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/vpd_unlock.js
