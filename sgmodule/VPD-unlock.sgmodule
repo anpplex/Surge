@@ -1,4 +1,4 @@
-#!name=VPD-unlock
+#!name=华为广告合规检查绕过
 #!desc=绕过华为设备的定位距离和路径限制检查
 #!homepage=https://github.com/anpplex/Surge
 #!author=anpplex
@@ -9,4 +9,4 @@
 hostname = mobile.avp.adscloud.huawei.com
 
 [Script]
-vpd-bypass-distance = type=http-response,pattern=^https://mobile\.avp\.adscloud\.huawei\.com/mobile/foundation-service/v1/vpd-compliance/check,requires-body=true,max-size=0,script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/vpd_unlock.js
+http-response ^https:\/\/mobile\.avp\.adscloud\.huawei\.com\/mobile\/foundation-service\/v1\/vpd-compliance\/check requires-body=1,max-size=131072 script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/vpd_unlock.js
