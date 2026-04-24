@@ -1,0 +1,18 @@
+#!name=喜马拉雅VIP解锁
+#!desc=喜马拉雅+会员解锁+大师课+音质/音效/下载
+#!openUrl=https://www.ximalaya.com/
+#!author=anpplex
+#!icon=https://cdn-static.ximalaya.com/ting/favicon.ico
+#!category=媒体
+#!homepage=https://github.com/WeiGiegie/666
+#!date=2026-04-24
+
+[General]
+# 用户信息配置
+
+[Script]
+# 喜马拉雅VIP解锁脚本
+xmly-vip = type=http-response, pattern=^https?:\/\/.*ximalaya\.com.*mobile-user\/v2\/homePage, script-path=https://raw.githubusercontent.com/WeiGiegie/666/main/xmly.js, requires-body=true, timeout=10, tag=喜马拉雅会员解锁
+
+[MITM]
+hostname = %APPEND% mobwsa.ximalaya.com,mobile.ximalaya.com,apisg.himalaya.com,passport.ximalaya.com,adse.ximalaya.com,adse.wsa.ximalaya.com,xdcs-collector.ximalaya.com
