@@ -1,21 +1,22 @@
 #!name=阿维塔签到
-#!desc=第一次登录阿维塔小程序时抓取凭证并立即签到，之后每天在 8:05–21:40 间的随机时间自动签到。请打开 MitM、信任证书，并允许 Surge 通知。
+#!desc=抓取阿维塔 App 的 loginToken 和 30 天 refreshToken。登录凭证不足 6 小时或已过期时自动续期并签到。请打开 MitM、信任证书，并允许 Surge 通知。
 #!author=anpplex
 #!homepage=https://github.com/anpplex/Surge
 #!category=工具
 # 安装：https://raw.githubusercontent.com/anpplex/Surge/main/sgmodule/avatr.sgmodule
-# 可选：argument 追加 yyb=http://主机:8800&openid=微信openid，凭证不足 6 小时时先自动登录再签。
+# refreshToken 过期后打开一次 App 即可重新抓取。没有 refreshToken 时，才需要在脚本里填 YYB-Go。
 
 [Script]
-阿维塔抓取 = type=http-request, pattern=^https?:\/\/([a-z0-9-]+\.)*avatr\.com\/api\/, script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, requires-body=0, max-size=0, timeout=20, engine=jsc, argument=mode=capture
-阿维塔登录响应 = type=http-response, pattern=(?i)^https?:\/\/([a-z0-9-]+\.)*avatr\.com\/api\/auth\/.*(login|token), script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, requires-body=1, max-size=262144, timeout=20, engine=jsc, full-header-mode=1, argument=mode=response
+阿维塔续期抓取 = type=http-request, pattern=^https?:\/\/appserver-view\.avatr\.com\/v6\/base-view\/auth\/getNewToken, script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, requires-body=1, max-size=8192, timeout=20, engine=jsc, argument=mode=capture
+阿维塔抓取 = type=http-request, pattern=^https?:\/\/(appserver-view|m)\.avatr\.com\/, script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, requires-body=0, max-size=0, timeout=20, engine=jsc, argument=mode=capture
+阿维塔登录响应 = type=http-response, pattern=(?i)^https?:\/\/([a-z0-9-]+\.)*avatr\.com\/(?:api\/auth\/.*(login|token)|v6\/base-view\/auth\/getNewToken), script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, requires-body=1, max-size=262144, timeout=20, engine=jsc, full-header-mode=1, argument=mode=response
 阿维塔签到 = type=cron, cronexp="7,33,51 8-21 * * *", script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, wake-system=1, timeout=30, engine=jsc, argument=mode=cron
 阿维塔补签 = type=cron, cronexp="17 22 * * *", script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, wake-system=1, timeout=30, engine=jsc, argument=mode=catchup
 阿维塔立即签到 = type=generic, script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, timeout=30, engine=jsc, argument=mode=now
 阿维塔面板 = type=generic, script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, timeout=10, engine=jsc, argument=mode=panel
 
 [Panel]
-阿维塔签到 = script-name=阿维塔面板, title="阿维塔签到", content="打开小程序登录一次", style=info, update-interval=600
+阿维塔签到 = script-name=阿维塔面板, title="阿维塔签到", content="打开一次阿维塔 App", style=info, update-interval=600
 
 [MITM]
 hostname = %APPEND% *.avatr.com

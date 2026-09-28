@@ -3,13 +3,13 @@
  *
  * 和当前配置放在同一目录。模块文件是「阿维塔签到.sgmodule」。
  *
- * 第一次在小程序或 App 里登录成功后，抓取 login-token 和 Cookie，通知结果并立即签到。
- * 当天已经签过则只更新凭证。没打开小程序的日子，在 8:05–21:40 之间抽一个时间自动签。
- * 凭证会在那个时间之前过期时，改到过期前签，避免空等。
+ * 第一次打开阿维塔 App 后，抓取 loginToken、refreshToken 和 deviceId。
+ * loginToken 约 24 小时。剩余不足 6 小时，或已经过期但 refreshToken 仍有效时，
+ * 调用 getNewToken 续期，再签到。refreshToken 约 30 天，过期后需要再打开一次 App。
+ * 当天已经签过则只更新凭证。没打开 App 的日子，在 8:05–21:40 之间抽一个时间自动签。
  * 22:17 若仍未签成，再补一次。
  *
- * 可选：把自己的 YYB-Go 填进下面两项，凭证不足 6 小时时先自动登录再签。
- * 不填则一直用抓到的凭证；过期后需要再打开一次小程序。
+ * 可选：填 YYB-Go 后，没有 refreshToken 时才用它换凭证。
  */
 "use strict";
 
@@ -25,6 +25,7 @@ const SESSION_KEY = "avatr_session";
 const STATE_KEY = "avatr_state";
 const SIGN_URL = "https://m.avatr.com/api/v6/signIn/signInRiskVerify";
 const LOGIN_URL = "https://appserver-view.avatr.com/api/auth/thirdLogin";
+const RENEW_URL = "https://appserver-view.avatr.com/v6/base-view/auth/getNewToken";
 const DEFAULT_UA = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/104 Mobile";
 
 const RSA_N = BigInt(
@@ -494,7 +495,21 @@ function findRefresh(obj, depth) {
 }
 
 function isLoginUrl(url) {
-  return /\/api\/auth\/.*(login|token)/i.test(String(url || ""));
+  return /\/api\/auth\/.*(login|token)|\/auth\/getNewToken/i.test(String(url || ""));
+}
+
+function canRenew(session) {
+  if (!session || !session.deviceId || !looksLikeJwt(session.refreshToken)) return false;
+  const left = jwtRemain(session.refreshToken);
+  return left == null || left > 60;
+}
+
+function shouldRenew(session) {
+  if (!canRenew(session)) return false;
+  if (!looksLikeJwt(session.token)) return true;
+  const left = jwtRemain(session.token);
+  if (left == null) return true;
+  return left < 6 * 3600;
 }
 
 function loginFailureText(data, bodyText) {
@@ -524,13 +539,13 @@ function saveExtract(extracted, source) {
       sessionDirty = true;
     }
   }
-  if (extracted.refreshToken && extracted.refreshToken !== session.refreshToken) {
+  if (extracted.refreshToken && isNewerToken(extracted.refreshToken, session.refreshToken)) {
     session.refreshToken = extracted.refreshToken;
     sessionDirty = true;
   }
-  ["appVersion", "os", "application", "ua"].forEach(function (key) {
+  ["appVersion", "os", "application", "ua", "deviceId", "deviceNumber", "phoneModel", "systemVersion", "channel"].forEach(function (key) {
     if (!extracted[key]) return;
-    const value = String(extracted[key]).slice(0, 180);
+    const value = String(extracted[key]).slice(0, key === "ua" ? 400 : 80);
     if (value !== session[key]) {
       session[key] = value;
       sessionDirty = true;
@@ -659,7 +674,20 @@ function stableBody(body) {
       ',"sourceType":' + JSON.stringify(String(body.sourceType)) +
       ',"authVerifyField":' + JSON.stringify(String(body.authVerifyField)) + "}";
   }
+  if (body.deviceId != null && body.nonce != null && body.refreshToken != null) {
+    return '{"deviceId":' + JSON.stringify(String(body.deviceId)) +
+      ',"isForce":' + (body.isForce ? "true" : "false") +
+      ',"nonce":' + JSON.stringify(String(body.nonce)) +
+      ',"refreshToken":' + JSON.stringify(String(body.refreshToken)) + "}";
+  }
   throw new Error("不支持的请求体");
+}
+
+function randomNonce(n) {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let out = "";
+  for (let i = 0; i < n; i++) out += alphabet.charAt(randomByte() % alphabet.length);
+  return out;
 }
 
 function signMaterial(expire, salt, bodyStr, method) {
@@ -682,6 +710,24 @@ function genSign(method, bodyObj) {
     },
     bodyStr: bodyStr,
   };
+}
+
+function renewHeaders(token, session) {
+  const headers = {
+    APPLICATION: "AVATR_APP",
+    OS: session && session.os ? session.os : "IOS",
+    "APP-VERSION": session && session.appVersion ? session.appVersion : "4.8.10",
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    "User-Agent": session && session.ua ? session.ua : "AvatrApp",
+    "login-token": token || "",
+    channel: session && session.channel ? session.channel : "0",
+  };
+  if (session && session.phoneModel) headers["phone-model"] = session.phoneModel;
+  if (session && session.systemVersion) headers.system_version = session.systemVersion;
+  if (session && session.deviceNumber) headers["device-number"] = session.deviceNumber;
+  if (session && session.cookies) headers.Cookie = session.cookies;
+  return headers;
 }
 
 function signHeaders(token, session) {
@@ -811,16 +857,60 @@ async function thirdLogin(code, appid) {
   return token;
 }
 
+async function renewWithRefresh(session) {
+  const nonce = String(Date.now()) + randomNonce(6);
+  const signed = genSign("POST", {
+    deviceId: session.deviceId,
+    isForce: false,
+    nonce: nonce,
+    refreshToken: session.refreshToken,
+  });
+  const headers = renewHeaders(session.token || "", session);
+  Object.keys(signed.headers).forEach(function (key) { headers[key] = signed.headers[key]; });
+  const res = await httpPost(RENEW_URL, headers, signed.bodyStr);
+  let data;
+  try { data = JSON.parse(res.body || ""); } catch (e) { throw new Error("续期响应不是 JSON"); }
+  if (!data || Number(data.code) !== 0) {
+    const message = (data && (data.message || data.msg)) || "";
+    const error = new Error(("续期失败 code=" + (data && data.code) + " " + message).trim());
+    if (/过期|无效|登录|失效/.test(message)) error.dead = true;
+    throw error;
+  }
+  const token = findJwt(data);
+  const refreshToken = findRefresh(data);
+  if (!looksLikeJwt(token)) throw new Error("续期没有返回新的 loginToken");
+  return saveExtract({ token: token, refreshToken: refreshToken, source: "refresh" }, "refresh").session;
+}
+
 async function performSign() {
   let session = readSession();
   const cfg = resolvedConfig();
-  const remain = session.token ? jwtRemain(session.token) : null;
-  if (yybReady(cfg) && (remain == null || remain < 6 * 3600)) {
+  let remain = session.token ? jwtRemain(session.token) : null;
+  if (shouldRenew(session)) {
+    try {
+      session = await renewWithRefresh(session);
+      remain = jwtRemain(session.token);
+      notify("已自动续期", "登录凭证" + remainText(remain) + "，续期凭证" + remainText(jwtRemain(session.refreshToken)), true);
+    } catch (e) {
+      const loginDead = !looksLikeJwt(session.token) || (remain != null && remain <= 0);
+      if (loginDead && yybReady(cfg)) {
+        console.log("refresh failed, try yyb " + (e && e.message ? e.message : e));
+      } else if (loginDead) {
+        throw e;
+      } else {
+        console.log("refresh failed, use current token " + (e && e.message ? e.message : e));
+      }
+    }
+  }
+  session = readSession();
+  remain = session.token ? jwtRemain(session.token) : null;
+  if (yybReady(cfg) && (!looksLikeJwt(session.token) || remain == null || remain < 6 * 3600)) {
     try {
       const code = await getWxCode(cfg);
       const token = await thirdLogin(code, cfg.appid);
       session = saveExtract({ token: token }, "yyb").session;
-      notify("已自动登录", remainText(jwtRemain(token)), true);
+      remain = jwtRemain(session.token);
+      notify("已自动登录", remainText(remain), true);
     } catch (e) {
       if (!looksLikeJwt(session.token) || (remain != null && remain <= 0)) throw e;
       console.log("yyb refresh failed " + (e && e.message ? e.message : e));
@@ -828,13 +918,13 @@ async function performSign() {
   }
   session = readSession();
   if (!looksLikeJwt(session.token)) {
-    const error = new Error("没有登录凭证。打开阿维塔小程序登录一次");
+    const error = new Error("没有登录凭证。打开一次阿维塔 App，让脚本抓到 loginToken 和 refreshToken");
     error.dead = true;
     throw error;
   }
   const left = jwtRemain(session.token);
   if (left != null && left <= -120) {
-    const error = new Error("登录凭证已过期。打开阿维塔小程序重新登录");
+    const error = new Error(canRenew(readSession()) ? "登录凭证已过期，续期没有成功" : "登录凭证和续期凭证都已过期。打开一次阿维塔 App 重新登录");
     error.dead = true;
     throw error;
   }
@@ -892,7 +982,7 @@ function onCapture() {
   }
   try {
     const extracted = extractRequest(typeof $request !== "undefined" ? $request : {});
-    if (!extracted.token && !extracted.cookies) {
+    if (!extracted.token && !extracted.cookies && !extracted.refreshToken && !extracted.deviceId) {
       stop();
       return;
     }
@@ -915,9 +1005,24 @@ function onCapture() {
   }
 }
 
+function extractBodyFields(bodyText) {
+  if (!bodyText) return {};
+  let data;
+  try { data = JSON.parse(bodyText); } catch (e) { return {}; }
+  if (!data || typeof data !== "object") return {};
+  const out = {};
+  if (typeof data.deviceId === "string" && /^[A-Fa-f0-9]{16,64}$/.test(data.deviceId)) out.deviceId = data.deviceId;
+  if (typeof data.refreshToken === "string") {
+    const refreshToken = cleanToken(data.refreshToken);
+    if (looksLikeJwt(refreshToken)) out.refreshToken = refreshToken;
+  }
+  return out;
+}
+
 function extractRequest(req) {
   const headers = (req && req.headers) || {};
   const token = cleanToken(headerGet(headers, "login-token"));
+  const bodyFields = extractBodyFields(asText(req && req.body));
   return {
     token: looksLikeJwt(token) ? token : "",
     cookies: headerGet(headers, "cookie"),
@@ -925,6 +1030,12 @@ function extractRequest(req) {
     os: headerGet(headers, "os"),
     application: headerGet(headers, "application"),
     ua: headerGet(headers, "user-agent"),
+    deviceNumber: headerGet(headers, "device-number"),
+    phoneModel: headerGet(headers, "phone-model"),
+    systemVersion: headerGet(headers, "system_version") || headerGet(headers, "system-version"),
+    channel: headerGet(headers, "channel"),
+    deviceId: bodyFields.deviceId || "",
+    refreshToken: bodyFields.refreshToken || "",
   };
 }
 
@@ -993,13 +1104,13 @@ function onCron(catchup) {
       finish();
       return;
     }
-    if (!looksLikeJwt(session.token) && !yybReady(cfg)) {
-      if (catchup) notifyOnce("今天还没签到", "没有登录凭证。打开阿维塔小程序登录一次，成功后会自动签到。");
+    if (!looksLikeJwt(session.token) && !canRenew(session) && !yybReady(cfg)) {
+      if (catchup) notifyOnce("今天还没签到", "没有登录凭证。打开一次阿维塔 App，脚本会抓取 loginToken 和 30 天的 refreshToken。");
       finish();
       return;
     }
-    if (remain != null && remain <= -120 && !yybReady(cfg)) {
-      notifyOnce("今天还没签到", "登录凭证已过期。打开阿维塔小程序重新登录，成功后会自动签到。");
+    if (remain != null && remain <= -120 && !canRenew(session) && !yybReady(cfg)) {
+      notifyOnce("今天还没签到", "续期凭证已过期。打开一次阿维塔 App 重新登录，成功后会再自动签到。");
       const blocked = readState();
       blocked.blockedDate = today;
       writeState(blocked);
@@ -1029,6 +1140,7 @@ function renderPanel() {
     const session = readSession();
     const today = localDate();
     const remain = session.token ? jwtRemain(session.token) : null;
+    const refreshRemain = session.refreshToken ? jwtRemain(session.refreshToken) : null;
     const slot = formatMinute(state.slotMinute);
     let style = "info";
     const lines = [];
@@ -1036,19 +1148,20 @@ function renderPanel() {
       style = "good";
       lines.push("今天已签");
       if (state.lastText) lines.push(state.lastText);
-    } else if (!session.token) {
+    } else if (!session.token && !canRenew(session)) {
       style = "alert";
       lines.push("今天 " + slot + " 自动签到");
       lines.push("还没抓到登录凭证");
-      lines.push("打开小程序登录一次");
+      lines.push("打开一次阿维塔 App");
     } else if (state.blockedDate === today) {
       style = "error";
       lines.push(state.lastText || "今天没签成");
-      lines.push("打开小程序登录后会再签");
+      lines.push("打开一次阿维塔 App 后会再签");
     } else {
       lines.push("今天 " + slot + " 自动签到");
-      lines.push("凭证" + remainText(remain));
+      lines.push("登录凭证" + remainText(remain));
     }
+    if (session.refreshToken) lines.push("续期凭证" + remainText(refreshRemain));
     if (session.token && session.capturedAt) lines.push("抓取于 " + formatClock(session.capturedAt));
     payload = { title: "阿维塔签到", content: lines.join("\n"), style: style };
   } catch (e) {
@@ -1114,6 +1227,14 @@ function selftest() {
   if (loginFailureText({ code: 0, result: { loginToken: future } }, "{}") !== "") throw new Error("login ok");
   if (mergeCookieHeader("a=1", { b: "2" }) !== "a=1; b=2") throw new Error("cookie " + mergeCookieHeader("a=1", { b: "2" }));
   if (!isLoginUrl("https://appserver-view.avatr.com/api/auth/thirdLogin")) throw new Error("login url");
+  if (!isLoginUrl("https://appserver-view.avatr.com/v6/base-view/auth/getNewToken")) throw new Error("renew url");
+  const renewBody = stableBody({ deviceId: "abc123abc123abcd", isForce: false, nonce: "1790596468888lyy7kd", refreshToken: future });
+  if (renewBody !== '{"deviceId":"abc123abc123abcd","isForce":false,"nonce":"1790596468888lyy7kd","refreshToken":"' + future + '"}') {
+    throw new Error("renew body " + renewBody);
+  }
+  if (shouldRenew({ deviceId: "abc123abc123abcd", refreshToken: future, token: past }) !== true) throw new Error("should renew");
+  if (shouldRenew({ deviceId: "abc123abc123abcd", refreshToken: past, token: past }) !== false) throw new Error("refresh dead");
+  if (canRenew({ deviceId: "abc123abc123abcd", refreshToken: future }) !== true) throw new Error("can renew");
   console.log("selftest ok");
 }
 
