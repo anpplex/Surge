@@ -6,8 +6,9 @@
  * 第一次打开阿维塔 App 后，抓取 loginToken、refreshToken 和 deviceId。
  * loginToken 约 24 小时。剩余不足 6 小时，或已经过期但 refreshToken 仍有效时，
  * 调用 getNewToken 续期，再签到。refreshToken 约 30 天，过期后需要再打开一次 App。
- * 当天已经签过则只更新凭证。没打开 App 的日子，在 8:05–21:40 之间抽一个时间自动签。
- * 22:17 若仍未签成，再补一次。
+ * 抓包只保存凭证，马上放行 App 请求。还没签到时，下一次定时检查会签。
+ * 当天已经签过仍会在 loginToken 不足 6 小时时续期，但不会再签一次。
+ * 没打开 App 的日子，在 8:05–21:40 之间抽一个时间自动签。22:17 若仍未签成，再补一次。
  *
  * 可选：填 YYB-Go 后，没有 refreshToken 时才用它换凭证。
  */
@@ -24,6 +25,7 @@ const CONFIG = {
 const SESSION_KEY = "avatr_session";
 const STATE_KEY = "avatr_state";
 const SIGN_URL = "https://m.avatr.com/api/v6/signIn/signInRiskVerify";
+const INFO_URL = "https://m.avatr.com/api/v6/signIn/info";
 const LOGIN_URL = "https://appserver-view.avatr.com/api/auth/thirdLogin";
 const RENEW_URL = "https://appserver-view.avatr.com/v6/base-view/auth/getNewToken";
 const DEFAULT_UA = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/104 Mobile";
@@ -278,12 +280,35 @@ function eachHeader(headers, visit) {
 }
 
 function headerGet(headers, name) {
+  const all = headerGetAll(headers, name);
+  return all.length ? all[all.length - 1] : "";
+}
+
+function headerGetAll(headers, name) {
   const wanted = String(name || "").toLowerCase();
-  let found = "";
+  const found = [];
   eachHeader(headers, function (field, value) {
-    if (String(field).toLowerCase() === wanted) found = headerValue(value).trim();
+    if (String(field).toLowerCase() !== wanted) return;
+    const text = headerValue(value).trim();
+    if (text) found.push(text);
   });
   return found;
+}
+
+function cookiesFromHeaders(headers) {
+  let merged = "";
+  headerGetAll(headers, "cookie").forEach(function (chunk) {
+    merged = mergeCookieHeader(merged, parsePairs(chunk));
+  });
+  return merged;
+}
+
+function credentialGapText(session) {
+  if (session && looksLikeJwt(session.refreshToken) && !session.deviceId) {
+    return "续期凭证还在，但没有 deviceId。打开一次阿维塔 App。";
+  }
+  if (session && canRenew(session)) return "登录凭证已过期，续期没有成功。";
+  return "续期凭证已过期。打开一次阿维塔 App 重新登录，成功后会再自动签到。";
 }
 
 function utf8(str) {
@@ -525,6 +550,7 @@ function loginFailureText(data, bodyText) {
 function saveExtract(extracted, source) {
   const session = readSession();
   let sessionDirty = false;
+  let unblock = false;
   if (extracted.cookies) {
     const cookies = mergeCookieHeader(session.cookies, parsePairs(extracted.cookies));
     if (cookies !== (session.cookies || "")) {
@@ -542,14 +568,15 @@ function saveExtract(extracted, source) {
   if (extracted.refreshToken && isNewerToken(extracted.refreshToken, session.refreshToken)) {
     session.refreshToken = extracted.refreshToken;
     sessionDirty = true;
+    unblock = true;
   }
   ["appVersion", "os", "application", "ua", "deviceId", "deviceNumber", "phoneModel", "systemVersion", "channel"].forEach(function (key) {
     if (!extracted[key]) return;
     const value = String(extracted[key]).slice(0, key === "ua" ? 400 : 80);
-    if (value !== session[key]) {
-      session[key] = value;
-      sessionDirty = true;
-    }
+    if (value === session[key]) return;
+    if (key === "deviceId") unblock = true;
+    session[key] = value;
+    sessionDirty = true;
   });
   let changed = false;
   if (extracted.token && isNewerToken(extracted.token, session.token)) {
@@ -558,15 +585,23 @@ function saveExtract(extracted, source) {
     session.source = source || "";
     sessionDirty = true;
     changed = true;
+    unblock = true;
   }
   if (sessionDirty) writeSession(session);
-  if (changed) {
+  if (unblock) {
     const state = readState();
     state.blockedDate = "";
-    state.failCount = 0;
+    if (changed) state.failCount = 0;
     writeState(state);
   }
   return { changed: changed, session: session, state: readState() };
+}
+
+function markPendingSign() {
+  const state = readState();
+  if (state.signedDate === localDate()) return;
+  state.pendingSign = 1;
+  writeState(state);
 }
 
 function rotr(x, n) {
@@ -679,6 +714,10 @@ function stableBody(body) {
       ',"isForce":' + (body.isForce ? "true" : "false") +
       ',"nonce":' + JSON.stringify(String(body.nonce)) +
       ',"refreshToken":' + JSON.stringify(String(body.refreshToken)) + "}";
+  }
+  if (body.startDate != null && body.endDate != null) {
+    return '{"startDate":' + JSON.stringify(String(body.startDate)) +
+      ',"endDate":' + JSON.stringify(String(body.endDate)) + "}";
   }
   throw new Error("不支持的请求体");
 }
@@ -809,6 +848,7 @@ function recordResult(classified) {
   if (result.todayPointValue != null) state.todayPoint = result.todayPointValue;
   if (classified.ok) {
     state.signedDate = today;
+    state.pendingSign = 0;
     state.blockedDate = "";
     state.failCount = 0;
   } else {
@@ -924,14 +964,51 @@ async function performSign() {
   }
   const left = jwtRemain(session.token);
   if (left != null && left <= -120) {
-    const error = new Error(canRenew(readSession()) ? "登录凭证已过期，续期没有成功" : "登录凭证和续期凭证都已过期。打开一次阿维塔 App 重新登录");
+    const error = new Error(credentialGapText(readSession()));
     error.dead = true;
     throw error;
   }
   const signed = genSign("POST", {});
   const headers = signHeaders(session.token, session);
   Object.keys(signed.headers).forEach(function (key) { headers[key] = signed.headers[key]; });
-  return classifySign(await httpPost(SIGN_URL, headers, signed.bodyStr));
+  const classified = classifySign(await httpPost(SIGN_URL, headers, signed.bodyStr));
+  if (classified.ok) return classified;
+  try {
+    const info = await querySignInfo(session);
+    if (info && info.ok) return info;
+  } catch (e) {
+    console.log("sign info " + (e && e.message ? e.message : e));
+  }
+  return classified;
+}
+
+function dateStamp(date) {
+  return date.getFullYear() + pad2(date.getMonth() + 1) + pad2(date.getDate());
+}
+
+function signInfoRange() {
+  const start = new Date();
+  const end = new Date(start.getTime());
+  end.setDate(end.getDate() + 6);
+  return { startDate: dateStamp(start), endDate: dateStamp(end) };
+}
+
+async function querySignInfo(session) {
+  const signed = genSign("POST", signInfoRange());
+  const headers = signHeaders(session.token, session);
+  Object.keys(signed.headers).forEach(function (key) { headers[key] = signed.headers[key]; });
+  const res = await httpPost(INFO_URL, headers, signed.bodyStr);
+  let data;
+  try { data = JSON.parse(res.body || ""); } catch (e) { return null; }
+  if (!data || Number(data.code) !== 0) return null;
+  const result = data.result || {};
+  if (!(Number(result.todayPointValue) > 0)) return null;
+  return {
+    ok: true,
+    dead: false,
+    text: "今天已经签过 今日+" + result.todayPointValue + " 连签" + result.continueSignInDays + "天",
+    result: result,
+  };
 }
 
 function runSign(finish, isCancelled) {
@@ -963,45 +1040,27 @@ function makeFinish(isHttp) {
   };
 }
 
-function armHttpTimeout(flag, finish) {
-  setTimeout(function () {
-    if (flag.settled) return;
-    unlockSign();
-    notify("签到没完成", "请求超时，稍后会自动再试", true);
-    finish();
-  }, 16000);
+function noteCapture(saved) {
+  if (!saved.changed) return;
+  const remain = remainText(jwtRemain(saved.session.token));
+  if (readState().signedDate === localDate()) {
+    if (announceCapture()) notify("登录凭证已更新", "今天已经签过。" + remain, false);
+    return;
+  }
+  markPendingSign();
+  if (announceCapture()) notify("已抓到登录凭证", remain + "。下一次检查时签到", true);
 }
 
 function onCapture() {
   const finish = makeFinish(true);
-  const flag = { settled: false };
-  function stop() {
-    if (flag.settled) return;
-    flag.settled = true;
-    finish();
-  }
   try {
     const extracted = extractRequest(typeof $request !== "undefined" ? $request : {});
-    if (!extracted.token && !extracted.cookies && !extracted.refreshToken && !extracted.deviceId) {
-      stop();
-      return;
-    }
-    const saved = saveExtract(extracted, "request");
-    if (!saved.changed) {
-      stop();
-      return;
-    }
-    if (readState().signedDate === localDate()) {
-      if (announceCapture()) notify("登录凭证已更新", "今天已经签过。" + remainText(jwtRemain(saved.session.token)), false);
-      stop();
-      return;
-    }
-    if (announceCapture()) notify("已抓到登录凭证", remainText(jwtRemain(saved.session.token)) + "，正在签到", true);
-    armHttpTimeout(flag, stop);
-    runSign(stop, function () { return flag.settled; });
+    if (!extracted.token && !extracted.cookies && !extracted.refreshToken && !extracted.deviceId) return;
+    noteCapture(saveExtract(extracted, "request"));
   } catch (e) {
     notify("抓取失败", String(e && e.message ? e.message : e), true);
-    stop();
+  } finally {
+    finish();
   }
 }
 
@@ -1025,7 +1084,7 @@ function extractRequest(req) {
   const bodyFields = extractBodyFields(asText(req && req.body));
   return {
     token: looksLikeJwt(token) ? token : "",
-    cookies: headerGet(headers, "cookie"),
+    cookies: cookiesFromHeaders(headers),
     appVersion: headerGet(headers, "app-version"),
     os: headerGet(headers, "os"),
     application: headerGet(headers, "application"),
@@ -1041,12 +1100,6 @@ function extractRequest(req) {
 
 function onResponse() {
   const finish = makeFinish(true);
-  const flag = { settled: false };
-  function stop() {
-    if (flag.settled) return;
-    flag.settled = true;
-    finish();
-  }
   try {
     const url = ($request && $request.url) || "";
     const bodyText = asText($response && $response.body);
@@ -1059,26 +1112,34 @@ function onResponse() {
       setCookies: pairsFromSetCookie($response && $response.headers),
       refreshToken: data ? findRefresh(data) : "",
     }, "response");
-    if (saved.changed) {
-      if (readState().signedDate === localDate()) {
-        if (announceCapture()) notify("登录凭证已更新", "今天已经签过。" + remainText(jwtRemain(saved.session.token)), false);
-        stop();
-        return;
-      }
-      if (announceCapture()) notify("已抓到登录凭证", remainText(jwtRemain(saved.session.token)) + "，正在签到", true);
-      armHttpTimeout(flag, stop);
-      runSign(stop, function () { return flag.settled; });
-      return;
-    }
-    if (isLoginUrl(url)) {
+    if (saved.changed) noteCapture(saved);
+    else if (isLoginUrl(url)) {
       const failure = loginFailureText(data, bodyText);
       if (failure) notifyFail("登录信息没抓到", failure);
     }
-    stop();
   } catch (e) {
     notify("抓取失败", String(e && e.message ? e.message : e), true);
-    stop();
+  } finally {
+    finish();
   }
+}
+
+function renewOnly(finish) {
+  renewWithRefresh(readSession()).then(function (next) {
+    notify("已自动续期", "登录凭证" + remainText(jwtRemain(next.token)) + "，续期凭证" + remainText(jwtRemain(next.refreshToken)), true);
+    finish();
+  }).catch(function (e) {
+    const text = String(e && e.message ? e.message : e);
+    if (e && e.dead) {
+      const state = readState();
+      state.blockedDate = localDate();
+      state.lastText = text;
+      state.lastOk = 0;
+      writeState(state);
+    }
+    notify("续期没完成", text, true);
+    finish();
+  });
 }
 
 function onCron(catchup) {
@@ -1086,7 +1147,19 @@ function onCron(catchup) {
   try {
     const state = ensureSlot(readState());
     const today = localDate();
-    if (state.signedDate === today || state.blockedDate === today) {
+    if (state.signedDate === today) {
+      if (state.pendingSign) {
+        state.pendingSign = 0;
+        writeState(state);
+      }
+      if (state.blockedDate !== today && shouldRenew(readSession())) {
+        renewOnly(finish);
+        return;
+      }
+      finish();
+      return;
+    }
+    if (state.blockedDate === today) {
       finish();
       return;
     }
@@ -1094,23 +1167,23 @@ function onCron(catchup) {
     const remain = session.token ? jwtRemain(session.token) : null;
     const cfg = resolvedConfig();
     const earliest = parseClock(cfg.earliest, 8 * 60 + 5);
-    const due = catchup || dueToSign(minutesNow(), state.slotMinute, remain, earliest);
+    const due = catchup || state.pendingSign || dueToSign(minutesNow(), state.slotMinute, remain, earliest);
     if (!due) {
       console.log("阿维塔未到点 " + formatMinute(state.slotMinute));
       finish();
       return;
     }
-    if (state.lastOk === 0 && state.lastAttemptAt && Date.now() - state.lastAttemptAt < 30 * 60 * 1000) {
+    if (!state.pendingSign && state.lastOk === 0 && state.lastAttemptAt && Date.now() - state.lastAttemptAt < 30 * 60 * 1000) {
       finish();
       return;
     }
     if (!looksLikeJwt(session.token) && !canRenew(session) && !yybReady(cfg)) {
-      if (catchup) notifyOnce("今天还没签到", "没有登录凭证。打开一次阿维塔 App，脚本会抓取 loginToken 和 30 天的 refreshToken。");
+      if (catchup || state.pendingSign) notifyOnce("今天还没签到", "没有登录凭证。打开一次阿维塔 App，脚本会抓取 loginToken 和 30 天的 refreshToken。");
       finish();
       return;
     }
     if (remain != null && remain <= -120 && !canRenew(session) && !yybReady(cfg)) {
-      notifyOnce("今天还没签到", "续期凭证已过期。打开一次阿维塔 App 重新登录，成功后会再自动签到。");
+      notifyOnce("今天还没签到", credentialGapText(session));
       const blocked = readState();
       blocked.blockedDate = today;
       writeState(blocked);
@@ -1148,6 +1221,11 @@ function renderPanel() {
       style = "good";
       lines.push("今天已签");
       if (state.lastText) lines.push(state.lastText);
+    } else if (looksLikeJwt(session.refreshToken) && !session.deviceId) {
+      style = "alert";
+      lines.push("今天 " + slot + " 自动签到");
+      lines.push("续期凭证" + remainText(refreshRemain));
+      lines.push("还缺 deviceId，打开一次阿维塔 App");
     } else if (!session.token && !canRenew(session)) {
       style = "alert";
       lines.push("今天 " + slot + " 自动签到");
@@ -1235,6 +1313,9 @@ function selftest() {
   if (shouldRenew({ deviceId: "abc123abc123abcd", refreshToken: future, token: past }) !== true) throw new Error("should renew");
   if (shouldRenew({ deviceId: "abc123abc123abcd", refreshToken: past, token: past }) !== false) throw new Error("refresh dead");
   if (canRenew({ deviceId: "abc123abc123abcd", refreshToken: future }) !== true) throw new Error("can renew");
+  const infoBody = stableBody({ startDate: "20260928", endDate: "20261004" });
+  if (infoBody !== '{"startDate":"20260928","endDate":"20261004"}') throw new Error("info body " + infoBody);
+  if (credentialGapText({ refreshToken: future, deviceId: "" }).indexOf("deviceId") < 0) throw new Error("gap device");
   console.log("selftest ok");
 }
 
