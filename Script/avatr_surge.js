@@ -1,7 +1,7 @@
 /**
- * 阿维塔签到 · Surge
+ * 阿维塔签到 · Surge / Loon / Shadowrocket / Quantumult X
  *
- * 和当前配置放在同一目录。模块文件是「阿维塔签到.sgmodule」。
+ * Surge 模块：阿维塔签到.sgmodule。其他工具的配置在同一仓库的 sgmodule 目录。
  *
  * 第一次打开阿维塔 App 后，抓取 loginToken、refreshToken 和 deviceId。
  * loginToken 约 24 小时。剩余不足 6 小时，或已经过期但 refreshToken 仍有效时，
@@ -143,10 +143,29 @@ function yybReady(cfg) {
   return !!(cfg.yybServer && cfg.openid && /^https?:\/\//i.test(cfg.yybServer));
 }
 
+function storageRead(key) {
+  try {
+    if (typeof $prefs !== "undefined" && $prefs.valueForKey) return $prefs.valueForKey(key) || "";
+  } catch (e) {}
+  try {
+    if (typeof $persistentStore !== "undefined" && $persistentStore.read) return $persistentStore.read(key) || "";
+  } catch (e) {}
+  return "";
+}
+
+function storageWrite(key, value) {
+  try {
+    if (typeof $prefs !== "undefined" && $prefs.setValueForKey) return $prefs.setValueForKey(value, key);
+  } catch (e) {}
+  try {
+    if (typeof $persistentStore !== "undefined" && $persistentStore.write) return $persistentStore.write(value, key);
+  } catch (e) {}
+  return false;
+}
+
 function readJSON(key) {
   try {
-    if (typeof $persistentStore === "undefined" || !$persistentStore.read) return {};
-    const raw = $persistentStore.read(key);
+    const raw = storageRead(key);
     if (!raw) return {};
     const obj = JSON.parse(raw);
     return obj && typeof obj === "object" ? obj : {};
@@ -157,8 +176,7 @@ function readJSON(key) {
 
 function writeJSON(key, obj) {
   try {
-    if (typeof $persistentStore === "undefined" || !$persistentStore.write) return false;
-    return $persistentStore.write(JSON.stringify(obj || {}), key);
+    return storageWrite(key, JSON.stringify(obj || {}));
   } catch (e) {
     return false;
   }
@@ -176,10 +194,20 @@ function notify(subtitle, body, sound) {
     if (typeof $surge !== "undefined" && $surge.logbook) $surge.logbook([subtitle, body].filter(Boolean).join(" "));
   } catch (e) {}
   try {
-    $notification.post(title, subtitle || "", body || "", { sound: !!sound });
-  } catch (e) {
-    try { $notification.post(title, subtitle || "", body || ""); } catch (e2) {}
-  }
+    if (typeof $notify === "function") {
+      $notify(title, subtitle || "", body || "");
+      return;
+    }
+  } catch (e) {}
+  try {
+    if (typeof $notification !== "undefined" && $notification.post) {
+      try {
+        $notification.post(title, subtitle || "", body || "", { sound: !!sound });
+      } catch (e2) {
+        $notification.post(title, subtitle || "", body || "");
+      }
+    }
+  } catch (e) {}
 }
 
 function notifyFail(subtitle, body) {
@@ -789,6 +817,14 @@ function signHeaders(token, session) {
 
 function httpPost(url, headers, body) {
   return new Promise(function (resolve, reject) {
+    if (typeof $task !== "undefined" && $task.fetch) {
+      $task.fetch({ url: url, method: "POST", headers: headers, body: body }).then(function (res) {
+        resolve({ status: res && (res.statusCode || res.status), body: asText(res && res.body) });
+      }, function (err) {
+        reject(new Error(typeof err === "string" ? err : (err && (err.error || err.message)) || "网络请求失败"));
+      });
+      return;
+    }
     if (typeof $httpClient === "undefined" || !$httpClient.post) {
       reject(new Error("没有 HTTP 客户端"));
       return;
@@ -801,7 +837,7 @@ function httpPost(url, headers, body) {
       "auto-cookie": false,
     }, function (err, resp, data) {
       if (err) reject(new Error(typeof err === "string" ? err : "网络请求失败"));
-      else resolve({ status: resp && resp.status, body: asText(data) });
+      else resolve({ status: resp && (resp.status || resp.statusCode), body: asText(data) });
     });
   });
 }
@@ -1260,8 +1296,15 @@ function inferMode() {
   return "cron";
 }
 
+function forcedMode() {
+  try {
+    if (typeof AVATR_FORCE_MODE === "string" && AVATR_FORCE_MODE) return AVATR_FORCE_MODE;
+  } catch (e) {}
+  return "";
+}
+
 function main() {
-  const mode = readArg().mode || inferMode();
+  const mode = readArg().mode || forcedMode() || inferMode();
   if (mode === "panel") return renderPanel();
   if (mode === "capture") return onCapture();
   if (mode === "response") return onResponse();
@@ -1319,8 +1362,8 @@ function selftest() {
   console.log("selftest ok");
 }
 
-const IN_SURGE = typeof $httpClient !== "undefined" || typeof $request !== "undefined" || typeof $response !== "undefined" || typeof $persistentStore !== "undefined" || typeof $notification !== "undefined";
-if (IN_SURGE) {
+const IN_APP = typeof $httpClient !== "undefined" || typeof $task !== "undefined" || typeof $request !== "undefined" || typeof $response !== "undefined" || typeof $persistentStore !== "undefined" || typeof $prefs !== "undefined" || typeof $notification !== "undefined" || typeof $notify !== "undefined";
+if (IN_APP) {
   try {
     main();
   } catch (e) {
