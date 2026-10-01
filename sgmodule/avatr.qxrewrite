@@ -5,4 +5,4 @@ hostname = appserver-view.avatr.com, m.avatr.com
 
 ^https?:\/\/appserver-view\.avatr\.com\/v6\/base-view\/auth\/getNewToken url script-request-body https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js
 ^https?:\/\/([a-z0-9-]+\.)*avatr\.com\/(?:api\/auth\/.*(login|token)|v6\/base-view\/auth\/getNewToken) url script-response-body https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js
-^https?:\/\/(appserver-view|m)\.avatr\.com\/(?!v6\/base-view\/auth\/getNewToken) url script-request-header https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js
+^https?:\/\/(?:m\.avatr\.com\/api\/|appserver-view\.avatr\.com\/(?!tbox\/|v6\/base-view\/auth\/getNewToken)) url script-request-header https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js

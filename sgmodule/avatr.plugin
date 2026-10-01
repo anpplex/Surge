@@ -5,7 +5,7 @@
 
 [Script]
 http-request ^https?:\/\/appserver-view\.avatr\.com\/v6\/base-view\/auth\/getNewToken script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, requires-body=true, timeout=10, argument=mode=capture, tag=阿维塔续期抓取
-http-request ^https?:\/\/(appserver-view|m)\.avatr\.com\/(?!v6\/base-view\/auth\/getNewToken) script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, requires-body=false, timeout=10, argument=mode=capture, tag=阿维塔抓取
+http-request ^https?:\/\/(?:m\.avatr\.com\/api\/|appserver-view\.avatr\.com\/(?!tbox\/|v6\/base-view\/auth\/getNewToken)) script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, requires-body=false, timeout=10, argument=mode=capture, tag=阿维塔抓取
 http-response ^https?:\/\/([a-z0-9-]+\.)*avatr\.com\/(?:api\/auth\/.*(login|token)|v6\/base-view\/auth\/getNewToken) script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, requires-body=true, timeout=10, argument=mode=response, tag=阿维塔登录响应
 cron "7,33,51 8-21 * * *" script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, timeout=30, argument=mode=cron, tag=阿维塔签到
 cron "17 22 * * *" script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, timeout=30, argument=mode=catchup, tag=阿维塔补签
