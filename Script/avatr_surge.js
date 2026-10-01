@@ -6,7 +6,8 @@
  * 第一次打开阿维塔 App 后，抓取 loginToken、refreshToken 和 deviceId。
  * loginToken 约 24 小时。剩余不足 6 小时，或已经过期但 refreshToken 仍有效时，
  * 调用 getNewToken 续期，再签到。refreshToken 约 30 天，过期后需要再打开一次 App。
- * 抓包只保存凭证，马上放行 App 请求。还没签到时，下一次定时检查会签。
+ * 只读 getNewToken、thirdLogin 和 getUserInfo。凭证先写入本地，再原样放行；
+ * 不改请求头，有正文时把原来的正文交回去。签到由定时任务自己请求。
  * 当天已经签过仍会在 loginToken 不足 6 小时时续期，但不会再签一次。
  * 没打开 App 的日子，在 8:05–21:40 之间抽一个时间自动签。22:17 若仍未签成，再补一次。
  *
@@ -1064,40 +1065,57 @@ function runSign(finish, isCancelled) {
   });
 }
 
+function httpPassthrough(request, response) {
+  if (response && response.body != null) return { body: response.body };
+  if (request && request.body != null && request.body !== "") return { body: request.body };
+  return {};
+}
+
 function makeFinish(isHttp) {
   let done = false;
   return function (extra) {
     if (done) return;
     done = true;
     if (typeof $done !== "function") return;
-    if (isHttp) $done({});
-    else if (extra && typeof extra === "object") $done(extra);
+    if (isHttp) {
+      const request = typeof $request !== "undefined" ? $request : null;
+      const response = typeof $response !== "undefined" ? $response : null;
+      $done(httpPassthrough(request, response));
+    } else if (extra && typeof extra === "object") $done(extra);
     else $done();
   };
 }
 
-function noteCapture(saved) {
-  if (!saved.changed) return;
+function stageCapture(saved) {
+  if (!saved || !saved.changed) return null;
   const remain = remainText(jwtRemain(saved.session.token));
-  if (readState().signedDate === localDate()) {
-    if (announceCapture()) notify("登录凭证已更新", "今天已经签过。" + remain, false);
-    return;
-  }
-  markPendingSign();
-  if (announceCapture()) notify("已抓到登录凭证", remain + "。下一次检查时签到", true);
+  const signed = readState().signedDate === localDate();
+  if (!signed) markPendingSign();
+  return { signed: signed, remain: remain, announce: announceCapture() };
+}
+
+function flushCaptureNotice(staged) {
+  if (!staged || !staged.announce) return;
+  if (staged.signed) notify("登录凭证已更新", "今天已经签过。" + staged.remain, false);
+  else notify("已抓到登录凭证", staged.remain + "。下一次检查时签到", true);
 }
 
 function onCapture() {
   const finish = makeFinish(true);
+  let staged = null;
+  let errorText = "";
   try {
     const extracted = extractRequest(typeof $request !== "undefined" ? $request : {});
-    if (!extracted.token && !extracted.cookies && !extracted.refreshToken && !extracted.deviceId) return;
-    noteCapture(saveExtract(extracted, "request"));
+    if (extracted.token || extracted.cookies || extracted.refreshToken || extracted.deviceId) {
+      staged = stageCapture(saveExtract(extracted, "request"));
+    }
   } catch (e) {
-    notify("抓取失败", String(e && e.message ? e.message : e), true);
+    errorText = String(e && e.message ? e.message : e);
   } finally {
     finish();
   }
+  if (errorText) notify("抓取失败", errorText, true);
+  else flushCaptureNotice(staged);
 }
 
 function extractBodyFields(bodyText) {
@@ -1136,11 +1154,14 @@ function extractRequest(req) {
 
 function onResponse() {
   const finish = makeFinish(true);
+  let staged = null;
+  let errorText = "";
+  let failure = "";
   try {
     const url = ($request && $request.url) || "";
     const bodyText = asText($response && $response.body);
     let data = null;
-    if (bodyText) {
+    if (bodyText && bodyText.length <= 65536) {
       try { data = JSON.parse(bodyText); } catch (e) { data = null; }
     }
     const saved = saveExtract({
@@ -1148,16 +1169,16 @@ function onResponse() {
       setCookies: pairsFromSetCookie($response && $response.headers),
       refreshToken: data ? findRefresh(data) : "",
     }, "response");
-    if (saved.changed) noteCapture(saved);
-    else if (isLoginUrl(url)) {
-      const failure = loginFailureText(data, bodyText);
-      if (failure) notifyFail("登录信息没抓到", failure);
-    }
+    staged = stageCapture(saved);
+    if (!staged && isLoginUrl(url) && bodyText.length <= 65536) failure = loginFailureText(data, bodyText);
   } catch (e) {
-    notify("抓取失败", String(e && e.message ? e.message : e), true);
+    errorText = String(e && e.message ? e.message : e);
   } finally {
     finish();
   }
+  if (errorText) notify("抓取失败", errorText, true);
+  else if (failure) notifyFail("登录信息没抓到", failure);
+  else flushCaptureNotice(staged);
 }
 
 function renewOnly(finish) {
@@ -1359,6 +1380,12 @@ function selftest() {
   const infoBody = stableBody({ startDate: "20260928", endDate: "20261004" });
   if (infoBody !== '{"startDate":"20260928","endDate":"20261004"}') throw new Error("info body " + infoBody);
   if (credentialGapText({ refreshToken: future, deviceId: "" }).indexOf("deviceId") < 0) throw new Error("gap device");
+  const reqPass = httpPassthrough({ body: "{\"a\":1}", headers: { Cookie: "a=1" } }, null);
+  if (reqPass.body !== "{\"a\":1}" || reqPass.headers) throw new Error("passthrough request");
+  const respPass = httpPassthrough({ body: "req" }, { body: "resp", headers: { a: "b" }, status: 200 });
+  if (respPass.body !== "resp" || respPass.headers || respPass.status) throw new Error("passthrough response");
+  const headerPass = httpPassthrough({ headers: { a: "b" } }, null);
+  if (Object.keys(headerPass).length !== 0) throw new Error("passthrough header");
   console.log("selftest ok");
 }
 
@@ -1368,7 +1395,13 @@ if (IN_APP) {
     main();
   } catch (e) {
     try { notify("脚本出错", String(e && e.message ? e.message : e), true); } catch (e2) {}
-    try { if (typeof $done === "function") $done({}); } catch (e3) {}
+    try {
+      if (typeof $done === "function") {
+        const request = typeof $request !== "undefined" ? $request : null;
+        const response = typeof $response !== "undefined" ? $response : null;
+        $done(request || response ? httpPassthrough(request, response) : {});
+      }
+    } catch (e3) {}
   }
 } else if (typeof process !== "undefined" && process.argv && process.argv.indexOf("--selftest") !== -1) {
   try {

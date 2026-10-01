@@ -8,8 +8,8 @@
 
 [Script]
 阿维塔续期抓取 = type=http-request, pattern=^https?:\/\/appserver-view\.avatr\.com\/v6\/base-view\/auth\/getNewToken, script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, requires-body=1, max-size=8192, timeout=10, engine=jsc, full-header-mode=1, argument=mode=capture
-阿维塔抓取 = type=http-request, pattern=^https?:\/\/(?:appserver-view\.avatr\.com\/app\/user\/getUserInfo|m\.avatr\.com\/api\/(?:v6\/signIn\/|app\/user\/)), script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, requires-body=0, max-size=0, timeout=10, engine=jsc, full-header-mode=1, argument=mode=capture
-阿维塔登录响应 = type=http-response, pattern=(?i)^https?:\/\/(?:appserver-view|m)\.avatr\.com\/(?:api\/auth\/.*(login|token)|v6\/base-view\/auth\/getNewToken), script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, requires-body=1, max-size=262144, timeout=10, engine=jsc, full-header-mode=1, argument=mode=response
+阿维塔抓取 = type=http-request, pattern=^https?:\/\/appserver-view\.avatr\.com\/app\/user\/getUserInfo, script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, requires-body=0, max-size=0, timeout=10, engine=jsc, full-header-mode=1, argument=mode=capture
+阿维塔登录响应 = type=http-response, pattern=(?i)^https?:\/\/appserver-view\.avatr\.com\/(?:api\/auth\/thirdLogin|v6\/base-view\/auth\/getNewToken), script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, requires-body=1, max-size=262144, timeout=10, engine=jsc, full-header-mode=1, argument=mode=response
 阿维塔签到 = type=cron, cronexp="7,33,51 8-21 * * *", script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, wake-system=1, timeout=30, engine=jsc, argument=mode=cron
 阿维塔补签 = type=cron, cronexp="17 22 * * *", script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, wake-system=1, timeout=30, engine=jsc, argument=mode=catchup
 阿维塔立即签到 = type=generic, script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js, timeout=30, engine=jsc, argument=mode=now
@@ -19,5 +19,5 @@
 阿维塔签到 = script-name=阿维塔面板, title="阿维塔签到", content="打开一次阿维塔 App", style=info, update-interval=600
 
 [MITM]
-# 只解密登录和签到这两个主机。不要写成 *.avatr.com。
-hostname = %APPEND% appserver-view.avatr.com, m.avatr.com
+# 只解密 appserver-view.avatr.com。控车和登录在同一台主机，不能按路径拆开；脚本不挂控车接口。
+hostname = %APPEND% appserver-view.avatr.com

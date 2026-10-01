@@ -1,8 +1,8 @@
 #!name=阿维塔签到
 #!desc=打开一次阿维塔 App 抓取凭证。loginToken 约 24 小时，refreshToken 约 30 天。不足 6 小时自动续期并签到。定时任务见仓库 README。
 
-hostname = appserver-view.avatr.com, m.avatr.com
+hostname = appserver-view.avatr.com
 
 ^https?:\/\/appserver-view\.avatr\.com\/v6\/base-view\/auth\/getNewToken url script-request-body https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js
-^https?:\/\/(?:appserver-view|m)\.avatr\.com\/(?:api\/auth\/.*(login|token)|v6\/base-view\/auth\/getNewToken) url script-response-body https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js
-^https?:\/\/(?:appserver-view\.avatr\.com\/app\/user\/getUserInfo|m\.avatr\.com\/api\/(?:v6\/signIn\/|app\/user\/)) url script-request-header https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js
+^https?:\/\/appserver-view\.avatr\.com\/(?:api\/auth\/thirdLogin|v6\/base-view\/auth\/getNewToken) url script-response-body https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js
+^https?:\/\/appserver-view\.avatr\.com\/app\/user\/getUserInfo url script-request-header https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js
