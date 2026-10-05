@@ -1,0 +1,21 @@
+#!name=百度网盘签到答题
+#!desc=超级会员每日签到并提交当日答题，同时汇总赚积分里已完成的日常任务。用 Surge 打开一次 pan.baidu.com 并登录后自动记下 Cookie。每天 9:17 执行，21:17 未成功再补一次。
+#!author=anpplex
+#!homepage=https://github.com/anpplex/Surge
+#!openUrl=https://pan.baidu.com/wap/svip/growth/task
+#!category=签到
+#!date=2026-10-05
+# 安装：https://raw.githubusercontent.com/anpplex/Surge/main/sgmodule/baidupan.sgmodule
+
+[Script]
+百度网盘抓取 = type=http-request, pattern=^https:\/\/pan\.baidu\.com\/(?:$|disk\/|wap\/svip\/growth|rest\/2\.0\/membership|act\/v2\/membergrow|coins\/), script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/baidupan_surge.js, requires-body=1, max-size=8192, timeout=5, engine=jsc, full-header-mode=1, argument=mode=capture
+百度网盘签到 = type=cron, cronexp="17 9 * * *", script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/baidupan_surge.js, wake-system=1, timeout=30, engine=jsc, argument=mode=cron
+百度网盘补签 = type=cron, cronexp="17 21 * * *", script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/baidupan_surge.js, wake-system=1, timeout=30, engine=jsc, argument=mode=catchup
+百度网盘立即签到 = type=generic, script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/baidupan_surge.js, timeout=30, engine=jsc, argument=mode=now
+百度网盘面板 = type=generic, script-path=https://raw.githubusercontent.com/anpplex/Surge/main/Script/baidupan_surge.js, timeout=10, engine=jsc, argument=mode=panel
+
+[Panel]
+百度网盘 = script-name=百度网盘面板, title="百度网盘签到", content="打开一次 pan.baidu.com", style=info, update-interval=3600
+
+[MITM]
+hostname = %APPEND% pan.baidu.com
