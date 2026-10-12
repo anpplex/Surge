@@ -1055,11 +1055,17 @@ async function postSigned(session, url, bodyObj) {
   return httpPost(url, headers, signed.bodyStr);
 }
 
+function infoFailureText(data) {
+  if (!data) return "签到信息不是 JSON";
+  const message = data.message || data.msg || "";
+  return ("签到信息 code=" + data.code + " " + message).trim().slice(0, 80);
+}
+
 async function fetchSignInfo(session) {
   const res = await postSigned(session, INFO_URL, signInfoRange());
   let data;
-  try { data = JSON.parse(res.body || ""); } catch (e) { return null; }
-  if (!data || Number(data.code) !== 0) return null;
+  try { data = JSON.parse(res.body || ""); } catch (e) { data = null; }
+  if (!data || Number(data.code) !== 0) throw new Error(infoFailureText(data));
   return data.result || {};
 }
 
@@ -1101,12 +1107,19 @@ function prizeLabel(result) {
 
 function rewardTaken(data) {
   const message = String((data && (data.message || data.msg)) || "");
-  return /已领|已领取|重复/.test(message);
+  return /已领取|重复领取/.test(message);
 }
 
 async function claimSignRewards(session, knownResult) {
-  const result = knownResult || await fetchSignInfo(session);
-  if (!result) return { checked: false, pending: 1, text: "" };
+  let result = knownResult;
+  if (!result) {
+    try {
+      result = await fetchSignInfo(session);
+    } catch (e) {
+      return { checked: false, pending: 1, text: "盲盒没领到 " + (e && e.message ? e.message : e) };
+    }
+  }
+  if (!result) return { checked: false, pending: 1, text: "盲盒没领到 没有签到信息" };
   const waiting = pendingRewards(result);
   if (!waiting.length) return { checked: true, pending: 0, text: "", result: result };
   const labels = [];
@@ -1152,6 +1165,12 @@ function rewardNeedsCheck(state, today, catchup) {
     return true;
   }
   return state.rewardCheckedDate !== today;
+}
+
+function signedFollowup(state, today, catchup, renew) {
+  if (rewardNeedsCheck(state, today, catchup)) return "reward";
+  if (state.blockedDate !== today && renew) return "renew";
+  return "";
 }
 
 function runSign(finish, isCancelled) {
@@ -1357,11 +1376,12 @@ function onCron(catchup) {
         state.pendingSign = 0;
         writeState(state);
       }
-      if (state.blockedDate !== today && rewardNeedsCheck(state, today, catchup)) {
+      const follow = signedFollowup(state, today, catchup, shouldRenew(readSession()));
+      if (follow === "reward") {
         runRewardOnly(finish);
         return;
       }
-      if (state.blockedDate !== today && shouldRenew(readSession())) {
+      if (follow === "renew") {
         renewOnly(finish);
         return;
       }
@@ -1548,6 +1568,15 @@ function selftest() {
   if (rewardNeedsCheck({ rewardCheckedDate: "2026-10-12", rewardPending: 0 }, "2026-10-12", false) !== false) throw new Error("reward done");
   if (rewardNeedsCheck({ rewardPending: 1, rewardAttemptAt: Date.now() }, "2026-10-12", false) !== false) throw new Error("reward backoff");
   if (rewardNeedsCheck({ rewardPending: 1, rewardAttemptAt: Date.now() }, "2026-10-12", true) !== true) throw new Error("reward catchup");
+  if (!rewardTaken({ message: "已领取" }) || !rewardTaken({ message: "重复领取" })) throw new Error("reward taken");
+  if (rewardTaken({ message: "已领完" }) || rewardTaken({ message: "重复提交" }) || rewardTaken({ message: "已领" })) throw new Error("reward taken broad");
+  if (infoFailureText(null) !== "签到信息不是 JSON") throw new Error("info json");
+  if (infoFailureText({ code: 9999, message: "登录失效" }) !== "签到信息 code=9999 登录失效") throw new Error("info code");
+  const pendingBlocked = { blockedDate: "2026-10-12", rewardPending: 1, rewardAttemptAt: Date.now() };
+  if (signedFollowup(pendingBlocked, "2026-10-12", false, true) !== "") throw new Error("follow backoff");
+  if (signedFollowup(pendingBlocked, "2026-10-12", true, true) !== "reward") throw new Error("follow catchup");
+  if (signedFollowup({ blockedDate: "2026-10-12", rewardCheckedDate: "2026-10-12", rewardPending: 0 }, "2026-10-12", false, true) !== "") throw new Error("follow blocked renew");
+  if (signedFollowup({ blockedDate: "", rewardCheckedDate: "2026-10-12", rewardPending: 0 }, "2026-10-12", false, true) !== "renew") throw new Error("follow renew");
   if (credentialGapText({ refreshToken: future, deviceId: "" }).indexOf("deviceId") < 0) throw new Error("gap device");
   const reqPass = httpPassthrough({ body: "{\"a\":1}", headers: { Cookie: "a=1" } }, null);
   if (reqPass.body !== "{\"a\":1}" || reqPass.headers) throw new Error("passthrough request");
