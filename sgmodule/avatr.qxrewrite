@@ -1,5 +1,5 @@
 #!name=阿维塔签到
-#!desc=打开一次阿维塔 App 抓取凭证。loginToken 约 24 小时，refreshToken 约 30 天。不足 6 小时自动续期并签到。定时任务见仓库 README。
+#!desc=打开一次阿维塔 App 抓取凭证。loginToken 约 24 小时，refreshToken 约 30 天。不足 6 小时自动续期并签到，连续满 7 天自动领盲盒。定时任务见仓库 README。
 
 hostname = appserver-view.avatr.com
 

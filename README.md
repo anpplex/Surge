@@ -24,7 +24,7 @@ RULE-SET,https://raw.githubusercontent.com/anpplex/Surge/main/PlexDirect.list,�
 
 ### 阿维塔
 
-打开一次阿维塔 App，抓取 `loginToken`（约 24 小时）和 `refreshToken`（约 30 天）。登录凭证不足 6 小时或已经过期时，用 `getNewToken` 自动续期，再签到。每天 8:05–21:40 之间随机签一次，22:17 补签。脚本只读 `getNewToken`、`thirdLogin` 和 `getUserInfo`，读完把原来的正文原样放行。签到由定时任务自己请求，不拦截 App 里的签到页、首页、消息、IM 和控车。解密只有 `appserver-view.avatr.com`。`refreshToken` 过期后，再打开一次 App 重新登录。
+打开一次阿维塔 App，抓取 `loginToken`（约 24 小时）和 `refreshToken`（约 30 天）。登录凭证不足 6 小时或已经过期时，用 `getNewToken` 自动续期，再签到。每天 8:05–21:40 之间随机签一次，22:17 补签。连续签到满 7 天出现盲盒时，用 `signIn/info` 里的 `rewardId` 调用 `receiveReward` 自动领取。脚本只读 `getNewToken`、`thirdLogin` 和 `getUserInfo`，读完把原来的正文原样放行。签到由定时任务自己请求，不拦截 App 里的签到页、首页、消息、IM 和控车。解密只有 `appserver-view.avatr.com`。`refreshToken` 过期后，再打开一次 App 重新登录。
 
 脚本：https://raw.githubusercontent.com/anpplex/Surge/main/Script/avatr_surge.js
 

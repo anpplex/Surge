@@ -9,6 +9,8 @@
  * 只读 getNewToken、thirdLogin 和 getUserInfo。凭证先写入本地，再原样放行；
  * 不改请求头，有正文时把原来的正文交回去。签到由定时任务自己请求。
  * 当天已经签过仍会在 loginToken 不足 6 小时时续期，但不会再签一次。
+ * 连续签到满 7 天，签到信息里会出现可领盲盒（giftStatus 为 1）。
+ * 签到成功后用 rewardId 领取；当天已签过但还没领，下次检查再领。
  * 没打开 App 的日子，在 8:05–21:40 之间抽一个时间自动签。22:17 若仍未签成，再补一次。
  *
  * 可选：填 YYB-Go 后，没有 refreshToken 时才用它换凭证。
@@ -27,6 +29,7 @@ const SESSION_KEY = "avatr_session";
 const STATE_KEY = "avatr_state";
 const SIGN_URL = "https://m.avatr.com/api/v6/signIn/signInRiskVerify";
 const INFO_URL = "https://m.avatr.com/api/v6/signIn/info";
+const REWARD_URL = "https://m.avatr.com/api/v6/signIn/receiveReward";
 const LOGIN_URL = "https://appserver-view.avatr.com/api/auth/thirdLogin";
 const RENEW_URL = "https://appserver-view.avatr.com/v6/base-view/auth/getNewToken";
 const DEFAULT_UA = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/104 Mobile";
@@ -748,6 +751,9 @@ function stableBody(body) {
     return '{"startDate":' + JSON.stringify(String(body.startDate)) +
       ',"endDate":' + JSON.stringify(String(body.endDate)) + "}";
   }
+  if (body.rewardId != null) {
+    return '{"rewardId":' + JSON.stringify(String(body.rewardId)) + "}";
+  }
   throw new Error("不支持的请求体");
 }
 
@@ -888,6 +894,14 @@ function recordResult(classified) {
     state.pendingSign = 0;
     state.blockedDate = "";
     state.failCount = 0;
+    if (classified.rewardChecked) {
+      state.rewardCheckedDate = today;
+      state.rewardPending = classified.rewardPending ? 1 : 0;
+      state.rewardAttemptAt = Date.now();
+    } else if (classified.rewardPending) {
+      state.rewardPending = 1;
+      state.rewardAttemptAt = Date.now();
+    }
   } else {
     state.failCount = (state.failDate === today ? Number(state.failCount) || 0 : 0) + 1;
     state.failDate = today;
@@ -1008,14 +1022,18 @@ async function performSign() {
   const signed = genSign("POST", {});
   const headers = signHeaders(session.token, session);
   Object.keys(signed.headers).forEach(function (key) { headers[key] = signed.headers[key]; });
-  const classified = classifySign(await httpPost(SIGN_URL, headers, signed.bodyStr));
-  if (classified.ok) return classified;
-  try {
-    const info = await querySignInfo(session);
-    if (info && info.ok) return info;
-  } catch (e) {
-    console.log("sign info " + (e && e.message ? e.message : e));
+  let classified = classifySign(await httpPost(SIGN_URL, headers, signed.bodyStr));
+  let infoResult = null;
+  if (!classified.ok) {
+    try {
+      infoResult = await fetchSignInfo(session);
+      const known = signInfoClassified(infoResult);
+      if (known) classified = known;
+    } catch (e) {
+      console.log("sign info " + (e && e.message ? e.message : e));
+    }
   }
+  if (classified.ok) classified = await attachReward(session, classified, infoResult);
   return classified;
 }
 
@@ -1024,28 +1042,116 @@ function dateStamp(date) {
 }
 
 function signInfoRange() {
-  const start = new Date();
-  const end = new Date(start.getTime());
-  end.setDate(end.getDate() + 6);
+  const end = new Date();
+  const start = new Date(end.getTime());
+  start.setDate(start.getDate() - 6);
   return { startDate: dateStamp(start), endDate: dateStamp(end) };
 }
 
-async function querySignInfo(session) {
-  const signed = genSign("POST", signInfoRange());
+async function postSigned(session, url, bodyObj) {
+  const signed = genSign("POST", bodyObj);
   const headers = signHeaders(session.token, session);
   Object.keys(signed.headers).forEach(function (key) { headers[key] = signed.headers[key]; });
-  const res = await httpPost(INFO_URL, headers, signed.bodyStr);
+  return httpPost(url, headers, signed.bodyStr);
+}
+
+async function fetchSignInfo(session) {
+  const res = await postSigned(session, INFO_URL, signInfoRange());
   let data;
   try { data = JSON.parse(res.body || ""); } catch (e) { return null; }
   if (!data || Number(data.code) !== 0) return null;
-  const result = data.result || {};
-  if (!(Number(result.todayPointValue) > 0)) return null;
+  return data.result || {};
+}
+
+function signInfoClassified(result) {
+  if (!result || !(Number(result.todayPointValue) > 0)) return null;
   return {
     ok: true,
     dead: false,
     text: "今天已经签过 今日+" + result.todayPointValue + " 连签" + result.continueSignInDays + "天",
     result: result,
   };
+}
+
+function pendingRewards(result) {
+  const list = result && result.signInRewards;
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i] || {};
+    if (Number(item.giftStatus) === 1 && item.rewardId) out.push(item);
+  }
+  return out;
+}
+
+function prizeLabel(result) {
+  const prizes = result && result.signInPrizes;
+  if (Array.isArray(prizes)) {
+    const names = [];
+    for (let i = 0; i < prizes.length; i++) {
+      const prize = prizes[i] || {};
+      const name = prize.prizeName || prize.name || prize.rewardName || prize.goodsName || "";
+      if (name) names.push(String(name));
+    }
+    if (names.length) return names.join("、");
+  }
+  if (result && result.rewardValue != null && result.rewardValue !== "") return "盲盒 +" + result.rewardValue;
+  return "盲盒已领";
+}
+
+function rewardTaken(data) {
+  const message = String((data && (data.message || data.msg)) || "");
+  return /已领|已领取|重复/.test(message);
+}
+
+async function claimSignRewards(session, knownResult) {
+  const result = knownResult || await fetchSignInfo(session);
+  if (!result) return { checked: false, pending: 1, text: "" };
+  const waiting = pendingRewards(result);
+  if (!waiting.length) return { checked: true, pending: 0, text: "", result: result };
+  const labels = [];
+  for (let i = 0; i < waiting.length; i++) {
+    const reward = waiting[i];
+    let data;
+    try {
+      const res = await postSigned(session, REWARD_URL, { rewardId: String(reward.rewardId) });
+      data = JSON.parse(res.body || "");
+    } catch (e) {
+      return { checked: true, pending: 1, text: "盲盒没领到 " + (e && e.message ? e.message : e), result: result };
+    }
+    if (!data || Number(data.code) !== 0) {
+      if (rewardTaken(data)) {
+        labels.push(prizeLabel(reward));
+        continue;
+      }
+      const message = ((data && (data.message || data.msg)) || "领取失败").slice(0, 80);
+      return { checked: true, pending: 1, text: "盲盒没领到 " + message, result: result };
+    }
+    labels.push(prizeLabel(data.result || reward));
+  }
+  return { checked: true, pending: 0, text: labels.join("，"), result: result };
+}
+
+async function attachReward(session, classified, infoResult) {
+  try {
+    const reward = await claimSignRewards(session, infoResult);
+    classified.rewardPending = reward.pending ? 1 : 0;
+    classified.rewardChecked = reward.checked ? 1 : 0;
+    if (reward.text) classified.text = classified.text ? classified.text + "，" + reward.text : reward.text;
+  } catch (e) {
+    classified.rewardPending = 1;
+    classified.rewardChecked = 0;
+    console.log("reward " + (e && e.message ? e.message : e));
+  }
+  return classified;
+}
+
+function rewardNeedsCheck(state, today, catchup) {
+  if (state.rewardPending) {
+    if (!catchup && state.rewardAttemptAt && Date.now() - state.rewardAttemptAt < 2 * 3600 * 1000) return false;
+    return true;
+  }
+  return state.rewardCheckedDate !== today;
 }
 
 function runSign(finish, isCancelled) {
@@ -1181,6 +1287,48 @@ function onResponse() {
   else flushCaptureNotice(staged);
 }
 
+function runRewardOnly(finish) {
+  if (!lockSign()) {
+    finish();
+    return;
+  }
+  (async function () {
+    let session = readSession();
+    if (shouldRenew(session)) {
+      try {
+        session = await renewWithRefresh(session);
+        notify("已自动续期", "登录凭证" + remainText(jwtRemain(session.token)) + "，续期凭证" + remainText(jwtRemain(session.refreshToken)), true);
+      } catch (e) {
+        const left = session.token ? jwtRemain(session.token) : null;
+        if (left != null && left <= 0) throw e;
+        console.log("refresh failed, claim with current token " + (e && e.message ? e.message : e));
+        session = readSession();
+      }
+    }
+    return claimSignRewards(session, null);
+  })().then(function (reward) {
+    const state = readState();
+    state.rewardAttemptAt = Date.now();
+    state.rewardPending = reward.pending ? 1 : 0;
+    if (reward.checked) state.rewardCheckedDate = localDate();
+    if (reward.text) {
+      state.lastText = state.lastText && state.lastText.indexOf(reward.text) >= 0 ? state.lastText : ((state.lastText ? state.lastText + "，" : "") + reward.text);
+    }
+    writeState(state);
+    unlockSign();
+    if (reward.text) notify(reward.pending ? "盲盒没领到" : "盲盒已领", reward.text, true);
+    finish();
+  }).catch(function (e) {
+    const state = readState();
+    state.rewardPending = 1;
+    state.rewardAttemptAt = Date.now();
+    writeState(state);
+    unlockSign();
+    notify("盲盒没领到", String(e && e.message ? e.message : e), true);
+    finish();
+  });
+}
+
 function renewOnly(finish) {
   renewWithRefresh(readSession()).then(function (next) {
     notify("已自动续期", "登录凭证" + remainText(jwtRemain(next.token)) + "，续期凭证" + remainText(jwtRemain(next.refreshToken)), true);
@@ -1208,6 +1356,10 @@ function onCron(catchup) {
       if (state.pendingSign) {
         state.pendingSign = 0;
         writeState(state);
+      }
+      if (state.blockedDate !== today && rewardNeedsCheck(state, today, catchup)) {
+        runRewardOnly(finish);
+        return;
       }
       if (state.blockedDate !== today && shouldRenew(readSession())) {
         renewOnly(finish);
@@ -1379,6 +1531,23 @@ function selftest() {
   if (canRenew({ deviceId: "abc123abc123abcd", refreshToken: future }) !== true) throw new Error("can renew");
   const infoBody = stableBody({ startDate: "20260928", endDate: "20261004" });
   if (infoBody !== '{"startDate":"20260928","endDate":"20261004"}') throw new Error("info body " + infoBody);
+  const rewardBody = stableBody({ rewardId: "d45855f65ba668057e5418770d4129c1" });
+  if (rewardBody !== '{"rewardId":"d45855f65ba668057e5418770d4129c1"}') throw new Error("reward body " + rewardBody);
+  const waiting = pendingRewards({
+    signInRewards: [
+      { giftStatus: 1, rewardId: "a" },
+      { giftStatus: 2, rewardId: "b" },
+      { giftStatus: 1, rewardId: "" },
+      { giftStatus: 0, rewardId: "c" },
+    ],
+  });
+  if (waiting.length !== 1 || waiting[0].rewardId !== "a") throw new Error("pending rewards");
+  if (prizeLabel({ rewardValue: 10, signInPrizes: null }) !== "盲盒 +10") throw new Error("prize value");
+  if (prizeLabel({ signInPrizes: [{ prizeName: "积分券" }] }) !== "积分券") throw new Error("prize name");
+  if (rewardNeedsCheck({ rewardCheckedDate: "2026-10-11" }, "2026-10-12", false) !== true) throw new Error("reward unchecked");
+  if (rewardNeedsCheck({ rewardCheckedDate: "2026-10-12", rewardPending: 0 }, "2026-10-12", false) !== false) throw new Error("reward done");
+  if (rewardNeedsCheck({ rewardPending: 1, rewardAttemptAt: Date.now() }, "2026-10-12", false) !== false) throw new Error("reward backoff");
+  if (rewardNeedsCheck({ rewardPending: 1, rewardAttemptAt: Date.now() }, "2026-10-12", true) !== true) throw new Error("reward catchup");
   if (credentialGapText({ refreshToken: future, deviceId: "" }).indexOf("deviceId") < 0) throw new Error("gap device");
   const reqPass = httpPassthrough({ body: "{\"a\":1}", headers: { Cookie: "a=1" } }, null);
   if (reqPass.body !== "{\"a\":1}" || reqPass.headers) throw new Error("passthrough request");
