@@ -9,6 +9,7 @@
  * 只读 getNewToken、thirdLogin 和 getUserInfo。凭证先写入本地，再原样放行；
  * 不改请求头，有正文时把原来的正文交回去。签到由定时任务自己请求。
  * 当天已经签过仍会在 loginToken 不足 6 小时时续期，但不会再签一次。
+ * 服务器交回的还是原来的凭证时，不发续期通知。
  * 连续签到满 7 天，签到信息里会出现可领盲盒（giftStatus 为 1）。
  * 签到成功后用 rewardId 领取；当天已签过但还没领，下次检查再领。
  * 没打开 App 的日子，在 8:05–21:40 之间抽一个时间自动签。22:17 若仍未签成，再补一次。
@@ -223,6 +224,10 @@ function notifyFail(subtitle, body) {
   state.failAt = now;
   writeState(state);
   notify(subtitle, body, true);
+}
+
+function notifyRenewed(session) {
+  notify("已自动续期", "登录凭证" + remainText(jwtRemain(session.token)) + "，续期凭证" + remainText(jwtRemain(session.refreshToken)), true);
 }
 
 function notifyOnce(subtitle, body) {
@@ -970,7 +975,7 @@ async function renewWithRefresh(session) {
   const token = findJwt(data);
   const refreshToken = findRefresh(data);
   if (!looksLikeJwt(token)) throw new Error("续期没有返回新的 loginToken");
-  return saveExtract({ token: token, refreshToken: refreshToken, source: "refresh" }, "refresh").session;
+  return saveExtract({ token: token, refreshToken: refreshToken, source: "refresh" }, "refresh");
 }
 
 async function performSign() {
@@ -979,9 +984,10 @@ async function performSign() {
   let remain = session.token ? jwtRemain(session.token) : null;
   if (shouldRenew(session)) {
     try {
-      session = await renewWithRefresh(session);
+      const saved = await renewWithRefresh(session);
+      session = saved.session;
       remain = jwtRemain(session.token);
-      notify("已自动续期", "登录凭证" + remainText(remain) + "，续期凭证" + remainText(jwtRemain(session.refreshToken)), true);
+      if (saved.changed) notifyRenewed(session);
     } catch (e) {
       const loginDead = !looksLikeJwt(session.token) || (remain != null && remain <= 0);
       if (loginDead && yybReady(cfg)) {
@@ -1315,8 +1321,9 @@ function runRewardOnly(finish) {
     let session = readSession();
     if (shouldRenew(session)) {
       try {
-        session = await renewWithRefresh(session);
-        notify("已自动续期", "登录凭证" + remainText(jwtRemain(session.token)) + "，续期凭证" + remainText(jwtRemain(session.refreshToken)), true);
+        const saved = await renewWithRefresh(session);
+        session = saved.session;
+        if (saved.changed) notifyRenewed(session);
       } catch (e) {
         const left = session.token ? jwtRemain(session.token) : null;
         if (left != null && left <= 0) throw e;
@@ -1349,8 +1356,8 @@ function runRewardOnly(finish) {
 }
 
 function renewOnly(finish) {
-  renewWithRefresh(readSession()).then(function (next) {
-    notify("已自动续期", "登录凭证" + remainText(jwtRemain(next.token)) + "，续期凭证" + remainText(jwtRemain(next.refreshToken)), true);
+  renewWithRefresh(readSession()).then(function (saved) {
+    if (saved.changed) notifyRenewed(saved.session);
     finish();
   }).catch(function (e) {
     const text = String(e && e.message ? e.message : e);
@@ -1361,7 +1368,7 @@ function renewOnly(finish) {
       state.lastOk = 0;
       writeState(state);
     }
-    notify("续期没完成", text, true);
+    notifyOnce("续期没完成", text);
     finish();
   });
 }
