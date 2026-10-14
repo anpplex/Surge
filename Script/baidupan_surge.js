@@ -4,7 +4,6 @@
  * 模块：百度网盘签到.sgmodule，脚本和配置放在同一目录。
  * 用 Surge 打开一次 https://pan.baidu.com 并登录，脚本只留下签到需要的 Cookie。
  * 每天 9:17 签到并提交当日答题，21:17 没成功再补一次。面板或「立即签到」可手动跑。
- * 赚积分页的任务列表会在同一次结果里汇总已完成的日常任务。领奖接口不重放。
  *
  * 接口与青龙 / 签到模板一致：
  *   签到  /rest/2.0/membership/level?method=signin
@@ -13,7 +12,6 @@
  *   等级  /rest/2.0/membership/user?method=query
  * 题目接口会把正确选项一并返回，脚本交的就是这个选项。
  * 2026 年有反馈：网页签到后成长值有时要在 App 里再点一次领取，答题仍会计分。
- * 若手机网盘的 /coins/taskcenter/signin 经过本机 Surge，定时任务会再请求一次。
  */
 "use strict";
 
@@ -23,11 +21,6 @@ const SIGN_URL = "https://pan.baidu.com/rest/2.0/membership/level?app_id=250528&
 const QUESTION_URL = "https://pan.baidu.com/act/v2/membergrowv2/getdailyquestion?app_id=250528&web=5";
 const ANSWER_URL = "https://pan.baidu.com/act/v2/membergrowv2/answerquestion?app_id=250528&web=5";
 const USER_URL = "https://pan.baidu.com/rest/2.0/membership/user?app_id=250528&web=5&method=query";
-const TASK_URL = "https://pan.baidu.com/coins/taskcenter/tasklist";
-const DEVICE_KEYS = [
-  "version", "channel", "app", "caller", "clienttype", "lang", "themeinfo", "aid",
-  "cuid", "devuid", "idfv", "idfa", "z", "offlinepackage", "task_from",
-];
 const KEEP_COOKIE = {
   BDUSS: 1,
   BDUSS_BFESS: 1,
@@ -174,70 +167,6 @@ function cookiesFromHeaders(headers) {
   return slimCookie(merged);
 }
 
-function mobileSignUrl(url) {
-  const text = String(url || "");
-  if (!/^https:\/\/pan\.baidu\.com\/coins\/[^?\s]*signin/i.test(text.split("#")[0])) return "";
-  return text
-    .replace(/([?&])(BDUSS|bduss|STOKEN|stoken)=[^&#]*/gi, "$1")
-    .replace(/[?&](?=&|$)/g, "")
-    .replace(/\?&/, "?")
-    .replace(/[?&]$/, "");
-}
-
-function decodePart(text) {
-  try {
-    return decodeURIComponent(String(text || "").replace(/\+/g, " "));
-  } catch (e) {
-    return String(text || "");
-  }
-}
-
-function queryMap(url) {
-  const text = String(url || "");
-  const mark = text.indexOf("?");
-  if (mark < 0) return {};
-  const map = {};
-  text.slice(mark + 1).split("#")[0].split("&").forEach(function (part) {
-    if (!part) return;
-    const index = part.indexOf("=");
-    const name = decodePart(index < 0 ? part : part.slice(0, index));
-    const value = index < 0 ? "" : decodePart(part.slice(index + 1));
-    if (name && value) map[name] = value;
-  });
-  return map;
-}
-
-function deviceFromUrl(url) {
-  const map = queryMap(url);
-  if (!map.cuid || !map.z) return null;
-  const device = {};
-  DEVICE_KEYS.forEach(function (key) {
-    if (map[key]) device[key] = map[key];
-  });
-  return device.cuid && device.z ? device : null;
-}
-
-function hexRand(bytes) {
-  let out = "";
-  for (let i = 0; i < bytes; i++) {
-    out += ("0" + Math.floor(Math.random() * 256).toString(16)).slice(-2);
-  }
-  return out;
-}
-
-function taskListUrl(device) {
-  const parts = [];
-  DEVICE_KEYS.forEach(function (key) {
-    if (key === "task_from" || !device[key]) return;
-    parts.push(encodeURIComponent(key) + "=" + encodeURIComponent(device[key]));
-  });
-  parts.push("task_from=" + encodeURIComponent(device.task_from || "task_sys_daily"));
-  parts.push("time=" + Math.floor(Date.now() / 1000));
-  parts.push("rand=" + hexRand(20));
-  parts.push("rand2=" + hexRand(20));
-  return TASK_URL + "?" + parts.join("&");
-}
-
 function parseJson(text) {
   try {
     return JSON.parse(text);
@@ -370,69 +299,6 @@ function describeUser(res) {
   };
 }
 
-function collectTasks(node, out) {
-  if (!node || typeof node !== "object") return;
-  if (node.task_class_id && node.task_name) {
-    out.push(node);
-    return;
-  }
-  if (Array.isArray(node)) {
-    node.forEach(function (item) { collectTasks(item, out); });
-    return;
-  }
-  Object.keys(node).forEach(function (key) { collectTasks(node[key], out); });
-}
-
-function taskDone(task) {
-  if (String(task.task_from || "") !== "task_sys_daily") return false;
-  if (String(task.task_status) === "1") return true;
-  return String(task.is_award_coins) === "1";
-}
-
-function summarizeTasks(res) {
-  if (!res) return { line: "", tasks: "" };
-  if (res.error) return { line: "日常任务列表请求失败：" + res.error, tasks: "" };
-  const data = parseJson(res.body);
-  if (!data) return { line: "日常任务列表无法解析", tasks: "" };
-  const code = codeOf(data, res.body);
-  const msg = msgOf(data, res.body);
-  if (loggedOut(code, msg)) return { line: "日常任务登录状态失效", tasks: "", auth: true };
-  if (code && code !== "0") return { line: "日常任务列表：" + (msg || ("错误码 " + code)), tasks: "" };
-  const all = [];
-  collectTasks(data, all);
-  const seen = {};
-  const names = [];
-  all.forEach(function (task) {
-    if (!taskDone(task)) return;
-    const id = String(task.task_class_id);
-    if (seen[id]) return;
-    seen[id] = 1;
-    const score = Number(task.task_score || 0);
-    names.push(String(task.task_name) + (score > 0 ? " +" + score : ""));
-  });
-  if (!names.length) return { line: "日常任务今天还没有已完成项", tasks: "日常任务今天还没有已完成项" };
-  const shown = names.slice(0, 8).join("、");
-  const line = "日常已完成 " + names.length + " 项：" + shown + (names.length > 8 ? " 等" : "");
-  return { line: line, tasks: line };
-}
-
-function describeMobile(res) {
-  if (!res) return null;
-  if (res.error) return { line: "手机端签到请求失败：" + res.error, ok: false };
-  const data = parseJson(res.body);
-  if (!data) {
-    const text = clip(res.body, 80);
-    return { line: "手机端签到已请求" + (text ? "：" + text : ""), ok: res.status === 200 };
-  }
-  const code = codeOf(data, res.body);
-  const msg = msgOf(data, res.body);
-  if (loggedOut(code, msg)) return { line: "手机端登录状态失效", ok: false, auth: true };
-  if (code === "0" || already(msg)) {
-    return { line: "手机端签到" + (already(msg) ? "今天已经做过" : "已提交") + (msg ? "（" + msg + "）" : ""), ok: true };
-  }
-  return { line: "手机端签到：" + (msg || ("错误码 " + (code || res.status || "?"))), ok: false };
-}
-
 function apiHeaders(session) {
   return {
     Accept: "application/json, text/plain, */*",
@@ -444,20 +310,10 @@ function apiHeaders(session) {
   };
 }
 
-function taskHeaders(session) {
-  const headers = apiHeaders(session);
-  const device = session.device || {};
-  if (device.ua) headers["User-Agent"] = device.ua;
-  headers.Referer = "https://pan.baidu.com/operation/activitys/taskSystem/main?executerefresh=1&na_immerse_theme=1";
-  return headers;
-}
-
-function httpRequest(method, url, headers, body) {
+function httpRequest(method, url, headers) {
   return new Promise(function (resolve) {
     const client = method === "POST" ? $httpClient.post : $httpClient.get;
-    const req = { url: url, headers: headers, timeout: 12 };
-    if (method === "POST") req.body = body || "";
-    client.call($httpClient, req, function (error, response, data) {
+    client.call($httpClient, { url: url, headers: headers, timeout: 12 }, function (error, response, data) {
       let status = 0;
       if (response) status = response.status || response.statusCode || 0;
       resolve({
@@ -487,33 +343,36 @@ function capture() {
     const slim = cookiesFromHeaders(headers);
     const session = readJson(SESSION_KEY);
     const previous = cookieValue(session.cookie, "BDUSS");
-    let bdussChanged = false;
+    let changed = false;
     if (slim && cookieValue(slim, "BDUSS")) {
       if (session.cookie !== slim) {
         session.cookie = slim;
         session.capturedAt = Date.now();
-        bdussChanged = cookieValue(slim, "BDUSS") !== previous;
+        changed = true;
       }
       const ua = headerGet(headers, "user-agent");
-      if (ua) session.ua = ua;
+      if (ua && session.ua !== ua) {
+        session.ua = ua;
+        changed = true;
+      }
     }
-    const mobile = mobileSignUrl($request && $request.url);
-    if (mobile) {
-      session.mobileSignUrl = mobile;
-      session.mobileMethod = String(($request && $request.method) || "GET").toUpperCase();
-      const body = $request && $request.body != null ? String($request.body) : "";
-      session.mobileBody = body.length <= 2048 ? body : "";
+    if (session.device || session.mobileSignUrl || session.mobileBody || session.mobileMethod) {
+      delete session.device;
+      delete session.mobileSignUrl;
+      delete session.mobileBody;
+      delete session.mobileMethod;
+      changed = true;
     }
-    const device = deviceFromUrl($request && $request.url);
-    if (device) {
-      const previousUa = session.device && session.device.ua;
-      session.device = device;
-      const ua = headerGet(headers, "user-agent");
-      if (ua && /iPhone|iPad/i.test(ua)) session.device.ua = ua;
-      else if (previousUa) session.device.ua = previousUa;
+    if (changed && session.cookie) {
+      writeJson(SESSION_KEY, {
+        cookie: session.cookie,
+        capturedAt: session.capturedAt || Date.now(),
+        ua: session.ua || "",
+      });
+      if (cookieValue(session.cookie, "BDUSS") !== previous) {
+        notify("百度网盘", "已记下登录状态，今天 9:17 自动签到答题");
+      }
     }
-    if (session.cookie || session.mobileSignUrl || session.device) writeJson(SESSION_KEY, session);
-    if (bdussChanged) notify("百度网盘", "已记下登录状态，今天 9:17 自动签到答题");
   } catch (e) {
     console.log("baidupan capture " + e);
   }
@@ -539,7 +398,6 @@ async function run(reason) {
   let auth = false;
   let signOk = false;
   let quizOk = false;
-  let tasksLine = "";
 
   const sign = describeSign(await httpRequest("GET", SIGN_URL, headers));
   parts.push(sign.line);
@@ -563,40 +421,16 @@ async function run(reason) {
     quizOk = !!quiz.ok;
   }
 
-  if (session.mobileSignUrl && !auth) {
-    await sleep(800);
-    const mobile = describeMobile(await httpRequest(
-      session.mobileMethod === "POST" ? "POST" : "GET",
-      session.mobileSignUrl,
-      headers,
-      session.mobileBody || ""
-    ));
-    if (mobile) {
-      parts.push(mobile.line);
-      if (mobile.ok) signOk = true;
-      if (mobile.auth) auth = true;
-    }
-  }
-
   await sleep(600);
   const user = describeUser(await httpRequest("GET", USER_URL, headers));
   if (user.line) parts.push(user.line);
 
-  if (session.device && session.device.cuid && session.device.z && !auth) {
-    await sleep(600);
-    const report = summarizeTasks(await httpRequest("GET", taskListUrl(session.device), taskHeaders(session)));
-    if (report.line) parts.push(report.line);
-    tasksLine = report.tasks || "";
-    if (report.auth) auth = true;
-  }
-
   const summary = parts.filter(function (line) { return line; }).join("\n");
-  const ok = !auth && (signOk || quizOk);
+  const ok = !auth && signOk && quizOk;
   writeJson(STATE_KEY, {
     date: today(),
     ok: ok,
     summary: summary,
-    tasks: tasksLine,
     level: user.level || state.level || "",
     value: user.value || state.value || "",
     at: Date.now(),
@@ -611,10 +445,7 @@ function panel() {
   if (state.level || state.value) lines.push("SVIP" + (state.level || "?") + " · 成长值 " + (state.value || "?"));
   else if (!cookieValue(session.cookie, "BDUSS")) lines.push("未登录，打开一次网盘网页");
   else lines.push("已登录，等待今天的签到");
-  if (state.summary) lines.push(state.date === today() ? state.summary.split("\n")[0] : state.date + " " + state.summary.split("\n")[0]);
-  if (state.tasks) lines.push(state.tasks);
-  else if (session.device && session.device.cuid) lines.push("已抓到赚积分页，等待今天的任务汇总");
-  if (session.mobileSignUrl) lines.push("已抓到手机端签到");
+  if (state.summary) lines.push(state.date === today() ? state.summary : state.date + "\n" + state.summary);
   $done({
     title: "百度网盘",
     content: lines.join("\n"),
@@ -637,9 +468,6 @@ function selfTest() {
   if (zero.answer !== "0") throw new Error("zero");
   const user = describeUser({ status: 200, body: '{"current_level":8,"current_value":12345}' });
   if (user.level !== "8" || user.value !== "12345") throw new Error("user " + user.line);
-  const mobile = mobileSignUrl("https://pan.baidu.com/coins/taskcenter/signin?cuid=1&BDUSS=secret&devuid=2");
-  if (!/cuid=1/.test(mobile) || /BDUSS=/.test(mobile)) throw new Error("mobile " + mobile);
-  if (mobileSignUrl("https://pan.baidu.com/disk/main")) throw new Error("disk url");
   const lost = describeSign({ status: 200, body: '{"errno":-6,"error_msg":"用户未登录"}' });
   if (!lost.auth) throw new Error("auth");
   const repeat = describeSign({ status: 200, body: '{"errno":37301,"error_msg":"repeat signin"}' });
@@ -649,27 +477,6 @@ function selfTest() {
     { title: "" }
   );
   if (!limited.ok) throw new Error("limit " + limited.line);
-  const device = deviceFromUrl("https://pan.baidu.com/coins/taskcenter/tasklist?cuid=device-1&z=zone&BDUSS=secret&task_from=task_sys_daily&version=13.34.0");
-  if (!device || device.cuid !== "device-1" || device.z !== "zone" || device.BDUSS || device.task_from !== "task_sys_daily") {
-    throw new Error("device");
-  }
-  const tasks = summarizeTasks({
-    status: 200,
-    body: JSON.stringify({
-      errno: 0,
-      result: [
-        { task_class_id: 1, task_name: "去QQ音乐听歌提现", task_from: "task_sys_daily", task_status: 1, task_score: 6 },
-        { task_class_id: 2, task_name: "去快手极速版点赞", task_from: "task_sys_daily", task_status: 0, task_score: 6, is_award_coins: "" },
-        { task_class_id: 1, task_name: "去QQ音乐听歌提现", task_from: "task_sys_daily", task_status: 1, task_score: 6 },
-        { task_class_id: 3, task_name: "今日签到领奖", task_from: "task_sys_daily", task_status: 1, task_score: 0 },
-      ],
-    }),
-  });
-  if (tasks.line.indexOf("日常已完成 2 项") < 0 || tasks.line.indexOf("快手") >= 0 || tasks.line.indexOf("今日签到领奖") < 0) {
-    throw new Error("tasks " + tasks.line);
-  }
-  const emptyTasks = summarizeTasks({ status: 200, body: '{"errno":0,"result":[]}' });
-  if (emptyTasks.line.indexOf("还没有已完成") < 0) throw new Error("empty " + emptyTasks.line);
 }
 
 function main() {

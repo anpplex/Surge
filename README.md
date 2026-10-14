@@ -63,7 +63,7 @@ MitM 主机名：`appserver-view.avatr.com`
 
 ### 百度网盘
 
-超级会员每天 9:17 签到并提交当日成长值答题，21:17 没成功再补一次。用 Surge 打开一次已登录的 pan.baidu.com，脚本记下 Cookie。手机网盘的赚积分页经过 Surge 时，会记下设备参数，并在同一次结果里列出已经完成的日常任务。还没完成的外部 App 任务只保留在列表里，不会代为领奖。
+超级会员每天 9:17 签到并提交当日成长值答题，21:17 没成功再补一次。用 Surge 打开一次已登录的 pan.baidu.com，脚本记下 Cookie。不做赚积分页的日常任务签到和领奖。
 
 脚本：https://raw.githubusercontent.com/anpplex/Surge/main/Script/baidupan_surge.js
 
