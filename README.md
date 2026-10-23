@@ -89,6 +89,12 @@ https://raw.githubusercontent.com/anpplex/Surge/main/sgmodule/jd.sgmodule
 
 https://raw.githubusercontent.com/anpplex/Surge/main/sgmodule/xmly.sgmodule
 
+### 番茄小说
+
+去掉开屏、章末和翻页插屏。短剧正片接口 `vas-lf-x.snssdk.com/video/fplay` 保留。装上后清一次番茄缓存，已经下到本地的插屏不再走网络。
+
+https://raw.githubusercontent.com/anpplex/Surge/main/sgmodule/fanqie.sgmodule
+
 ## 效率
 
 ### Notability

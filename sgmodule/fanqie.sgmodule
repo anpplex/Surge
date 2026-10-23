@@ -1,0 +1,58 @@
+#!name=番茄小说去广告
+#!desc=去掉番茄小说开屏、章末和翻页插屏。短剧正片接口 vas-lf-x.snssdk.com/video/fplay 保留。
+#!author=anpplex
+#!homepage=https://github.com/anpplex/Surge
+#!openUrl=https://apps.apple.com/app/id1468454200
+#!icon=https://raw.githubusercontent.com/zirawell/R-Store/main/Res/Icon/App/fanqie.png
+#!category=阅读
+#!date=2026-10-23
+# 安装：https://raw.githubusercontent.com/anpplex/Surge/main/sgmodule/fanqie.sgmodule
+# 域名规则以 zirawell/R-Store fanqie.sgmodule（2026-04-15）为底。
+# 2026-10-23 抓包（番茄 7.2.1.32，aid=1967）里，翻页只请求
+# vas-lf-x.snssdk.com/video/fplay，响应是短剧正片。不要拒绝这个域名。
+# 翻页弹窗来自更早的穿山甲 get_ads 预取。原模块只解密、不拒绝这条接口。
+# 装上后清一次番茄缓存，已经下到本地的插屏不再走网络。
+
+[Rule]
+DOMAIN,zlink.ugsdk.cn,REJECT,extended-matching,pre-matching
+DOMAIN,praisewindow.ugsdk.cn,REJECT,extended-matching,pre-matching
+DOMAIN,content-open.douyin.com,REJECT,extended-matching,pre-matching
+DOMAIN,webcast-open.douyin.com,REJECT,extended-matching,pre-matching
+DOMAIN,lf-webcast-gr-sourcecdn.bytegecko.com,REJECT,extended-matching,pre-matching
+DOMAIN,lf3-reading.fqnovelstatic.com,REJECT,extended-matching,pre-matching
+DOMAIN,mon11-misc.fqnovel.com,REJECT,extended-matching,pre-matching
+DOMAIN-KEYWORD,-applog.fqnovel.com,REJECT,extended-matching,pre-matching
+
+DOMAIN-KEYWORD,pangolin-sdk-toutiao,REJECT,extended-matching,pre-matching
+DOMAIN-SUFFIX,pangle.io,REJECT,extended-matching,pre-matching
+DOMAIN-SUFFIX,pglstatp-toutiao.com,REJECT,extended-matching,pre-matching
+DOMAIN-KEYWORD,reading-ad.qznovelvod.com,REJECT,extended-matching,pre-matching
+DOMAIN-KEYWORD,-ad-sign.byteimg.com,REJECT,extended-matching,pre-matching
+AND,((DOMAIN-SUFFIX,zijieapi.com),(DOMAIN-KEYWORD,ads)),REJECT,extended-matching,pre-matching
+DOMAIN-SUFFIX,ad.zijieapi.com,REJECT,extended-matching,pre-matching
+DOMAIN,i.snssdk.com,REJECT,extended-matching,pre-matching
+DOMAIN,i-lq.snssdk.com,REJECT,extended-matching,pre-matching
+DOMAIN,ib-lq.snssdk.com,REJECT,extended-matching,pre-matching
+DOMAIN,activity-ag.awemeughun.com,REJECT,extended-matching,pre-matching
+DOMAIN,dig.bdurl.net,REJECT,extended-matching,pre-matching
+DOMAIN,dig.zjurl.cn,REJECT,extended-matching,pre-matching
+
+[URL Rewrite]
+^https?:\/\/.+\.pstatp\.com\/(obj|img)\/ad - reject
+^https?:\/\/.+\.pstatp\.com\/(obj|img)\/web\.business\.image\/.+ - reject
+^https?:\/\/gurd\.snssdk\.com\/src\/server\/v\d\/package - reject
+^https?:\/\/.+\.byteimg.com/tos-cn-i-1yzifmftcy\/(.+)-jpeg\.jpeg - reject
+^https?:\/\/.+\.pstatp\.com\/obj\/mosaic-legacy\/.+\?from\=ad - reject
+^https?:\/\/.+\.pstatp\.com\/bytecom\/resource\/track_log\/src\/.+ - reject
+^https?:\/\/.+\.snssdk\.com\/video\/play\/1\/toutiao\/.+\/mp4 - reject
+^https?:\/\/.+\.snssdk.com\/api\/ad\/.+ - reject
+^https?:\/\/.+\.byteimg\.com\/ad-app-package - reject
+^https?:\/\/.+\.byteimg\.com\/web\.business\.image - reject
+^https?:\/\/lf-cdn-tos\.bytescm\.com\/obj\/static\/ad - reject
+^https?:\/\/tnc3-alisc1\.zijieapi\.com\/get_domains - reject
+^https?:\/\/.+\.pangolin-sdk-toutiao\d?(?:-b)?\.com\/api\/ad\/ - reject
+^https?:\/\/.+\.pglstatp-toutiao\.com\/obj\/ad-pattern\/ - reject
+^https?:\/\/v\d[0-9a-z-]*reading-ad\.qznovelvod\.com\/ - reject
+
+[MITM]
+hostname = %APPEND% *.pangolin-sdk-toutiao.*, *.pangolin-sdk-toutiao-b.com, *.pstatp.com, *.pglstatp-toutiao.com, gurd.snssdk.com, *default.ixigua.com, lf-cdn-tos.bytescm.com, tnc3-alisc1.zijieapi.com, *.qznovelvod.com
